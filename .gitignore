@@ -5,5 +5,5 @@
 terraform.tfstate
 terraform.tfstate*
 *.plan
-
+*.tfbak
 *.exe

@@ -1,0 +1,210 @@
+package provider
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/workspaces"
+	workspacestypes "github.com/aws/aws-sdk-go-v2/service/workspaces/types"
+
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+)
+
+var _ resource.Resource = &WorkspacesImagePermissionResource{}
+var _ resource.ResourceWithImportState = &WorkspacesImagePermissionResource{}
+
+func NewWorkspacesImagePermissionResource() resource.Resource {
+	return &WorkspacesImagePermissionResource{}
+}
+
+type WorkspacesImagePermissionResource struct {
+	config aws.Config
+}
+
+type WorkspacesImagePermissionResourceModel struct {
+	ImageId         types.String `tfsdk:"image_id"`
+	SharedAccountId types.String `tfsdk:"shared_account_id"`
+}
+
+func (r *WorkspacesImagePermissionResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_workspaces_image_permission"
+}
+
+func (r *WorkspacesImagePermissionResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		MarkdownDescription: "Shares a WorkSpace image with another AWS account via UpdateWorkspaceImagePermission. " +
+			"Destroying this resource revokes the sharing permission. " +
+			"Import using the format: image_id/shared_account_id.",
+
+		Attributes: map[string]schema.Attribute{
+			"image_id": schema.StringAttribute{
+				Required:    true,
+				Description: "The identifier of the WorkSpace image to share.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"shared_account_id": schema.StringAttribute{
+				Required:    true,
+				Description: "The AWS account ID to share the image with.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+		},
+	}
+}
+
+func (r *WorkspacesImagePermissionResource) Configure(ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
+	if req.ProviderData == nil {
+		return
+	}
+
+	config, ok := req.ProviderData.(aws.Config)
+
+	if !ok {
+		resp.Diagnostics.AddError(
+			"Unexpected Resource Configure Type",
+			fmt.Sprintf("Expected *aws.Config, got: %T. Please report this issue to the provider developers.", req.ProviderData),
+		)
+
+		return
+	}
+
+	r.config = config
+}
+
+func (r *WorkspacesImagePermissionResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var data WorkspacesImagePermissionResourceModel
+
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	conn := workspaces.NewFromConfig(r.config)
+
+	_, err := conn.UpdateWorkspaceImagePermission(ctx, &workspaces.UpdateWorkspaceImagePermissionInput{
+		ImageId:         aws.String(data.ImageId.ValueString()),
+		SharedAccountId: aws.String(data.SharedAccountId.ValueString()),
+		AllowCopyImage:  aws.Bool(true),
+	})
+
+	if err != nil {
+		resp.Diagnostics.AddError("Error sharing WorkSpace image",
+			fmt.Sprintf("Could not share WorkSpace image %s with account %s, unexpected error: %s",
+				data.ImageId.ValueString(), data.SharedAccountId.ValueString(), err))
+		return
+	}
+
+	tflog.Trace(ctx, "shared workspaces image")
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+func (r *WorkspacesImagePermissionResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	var data WorkspacesImagePermissionResourceModel
+
+	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	conn := workspaces.NewFromConfig(r.config)
+
+	found := false
+	var nextToken *string
+
+	for {
+		output, err := conn.DescribeWorkspaceImagePermissions(ctx, &workspaces.DescribeWorkspaceImagePermissionsInput{
+			ImageId:   aws.String(data.ImageId.ValueString()),
+			NextToken: nextToken,
+		})
+
+		if err != nil {
+			var notFound *workspacestypes.ResourceNotFoundException
+			if errors.As(err, &notFound) {
+				resp.State.RemoveResource(ctx)
+				return
+			}
+			resp.Diagnostics.AddError("Error reading WorkSpace image permissions",
+				fmt.Sprintf("Could not read permissions for WorkSpace image %s, unexpected error: %s",
+					data.ImageId.ValueString(), err))
+			return
+		}
+
+		for _, perm := range output.ImagePermissions {
+			if aws.ToString(perm.SharedAccountId) == data.SharedAccountId.ValueString() {
+				found = true
+				break
+			}
+		}
+
+		if found || output.NextToken == nil {
+			break
+		}
+		nextToken = output.NextToken
+	}
+
+	if !found {
+		resp.State.RemoveResource(ctx)
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+func (r *WorkspacesImagePermissionResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	// All attributes use RequiresReplace; Update is never called.
+}
+
+func (r *WorkspacesImagePermissionResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	var data WorkspacesImagePermissionResourceModel
+
+	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	conn := workspaces.NewFromConfig(r.config)
+
+	_, err := conn.UpdateWorkspaceImagePermission(ctx, &workspaces.UpdateWorkspaceImagePermissionInput{
+		ImageId:         aws.String(data.ImageId.ValueString()),
+		SharedAccountId: aws.String(data.SharedAccountId.ValueString()),
+		AllowCopyImage:  aws.Bool(false),
+	})
+
+	if err != nil {
+		var notFound *workspacestypes.ResourceNotFoundException
+		if errors.As(err, &notFound) {
+			return
+		}
+		resp.Diagnostics.AddError("Error revoking WorkSpace image permission",
+			fmt.Sprintf("Could not revoke permission for WorkSpace image %s from account %s, unexpected error: %s",
+				data.ImageId.ValueString(), data.SharedAccountId.ValueString(), err))
+		return
+	}
+}
+
+func (r *WorkspacesImagePermissionResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	idParts := strings.SplitN(req.ID, "/", 2)
+	if len(idParts) != 2 || idParts[0] == "" || idParts[1] == "" {
+		resp.Diagnostics.AddError(
+			"Unexpected Import Identifier",
+			fmt.Sprintf("Expected import identifier with format: image_id/shared_account_id. Got: %q", req.ID),
+		)
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("image_id"), idParts[0])...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("shared_account_id"), idParts[1])...)
+}
