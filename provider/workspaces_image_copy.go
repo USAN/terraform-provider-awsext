@@ -162,7 +162,19 @@ func (r *WorkspacesImageCopyResource) Create(ctx context.Context, req resource.C
 	tflog.Trace(ctx, "copied workspaces image resource")
 
 	data.ImageId = types.StringValue(aws.ToString(output.ImageId))
-	data.State = types.StringValue("PENDING")
+
+	// CopyWorkspaceImage only returns ImageId; describe to populate remaining computed fields.
+	descOutput, err := conn.DescribeWorkspaceImages(ctx, &workspaces.DescribeWorkspaceImagesInput{
+		ImageIds: []string{data.ImageId.ValueString()},
+	})
+	if err == nil && len(descOutput.Images) > 0 {
+		img := descOutput.Images[0]
+		data.State = types.StringValue(string(img.State))
+		data.OwnerAccountId = types.StringValue(aws.ToString(img.OwnerAccountId))
+	} else {
+		data.State = types.StringValue("PENDING")
+		data.OwnerAccountId = types.StringValue("")
+	}
 
 	if tags, err := readResourceTags(ctx, conn, data.ImageId.ValueString()); err == nil {
 		data.Tags = tags
