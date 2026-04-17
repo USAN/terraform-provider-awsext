@@ -39,6 +39,7 @@ type WorkspacesImageResourceModel struct {
 	WorkspaceId    types.String `tfsdk:"workspace_id"`
 	State          types.String `tfsdk:"state"`
 	OwnerAccountId types.String `tfsdk:"owner_account_id"`
+	Tags           types.Map    `tfsdk:"tags"`
 }
 
 func (r *WorkspacesImageResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -89,6 +90,12 @@ func (r *WorkspacesImageResource) Schema(ctx context.Context, req resource.Schem
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
+			"tags": schema.MapAttribute{
+				Optional:    true,
+				Computed:    true,
+				ElementType: types.StringType,
+				Description: "Tags to assign to the image.",
+			},
 		},
 	}
 }
@@ -122,11 +129,17 @@ func (r *WorkspacesImageResource) Create(ctx context.Context, req resource.Creat
 
 	conn := workspaces.NewFromConfig(r.config)
 
-	output, err := conn.CreateWorkspaceImage(ctx, &workspaces.CreateWorkspaceImageInput{
+	input := &workspaces.CreateWorkspaceImageInput{
 		Name:        aws.String(data.Name.ValueString()),
 		Description: aws.String(data.Description.ValueString()),
 		WorkspaceId: aws.String(data.WorkspaceId.ValueString()),
-	})
+	}
+
+	if tagList, err := tagsToList(ctx, data.Tags); err == nil {
+		input.Tags = tagList
+	}
+
+	output, err := conn.CreateWorkspaceImage(ctx, input)
 
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating WorkSpace image",
@@ -139,6 +152,10 @@ func (r *WorkspacesImageResource) Create(ctx context.Context, req resource.Creat
 	data.ImageId = types.StringValue(aws.ToString(output.ImageId))
 	data.State = types.StringValue(string(output.State))
 	data.OwnerAccountId = types.StringValue(aws.ToString(output.OwnerAccountId))
+
+	if tags, err := readResourceTags(ctx, conn, data.ImageId.ValueString()); err == nil {
+		data.Tags = tags
+	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -180,11 +197,35 @@ func (r *WorkspacesImageResource) Read(ctx context.Context, req resource.ReadReq
 	data.State = types.StringValue(string(img.State))
 	data.OwnerAccountId = types.StringValue(aws.ToString(img.OwnerAccountId))
 
+	if tags, err := readResourceTags(ctx, conn, data.ImageId.ValueString()); err == nil {
+		data.Tags = tags
+	}
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
 func (r *WorkspacesImageResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	// All mutable attributes use RequiresReplace; Update is never called.
+	var plan, state WorkspacesImageResourceModel
+
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	conn := workspaces.NewFromConfig(r.config)
+
+	if err := updateResourceTags(ctx, conn, state.ImageId.ValueString(), state.Tags, plan.Tags); err != nil {
+		resp.Diagnostics.AddError("Error updating WorkSpace image tags",
+			fmt.Sprintf("Could not update tags for WorkSpace image %s, unexpected error: %s", state.ImageId.ValueString(), err))
+		return
+	}
+
+	if tags, err := readResourceTags(ctx, conn, plan.ImageId.ValueString()); err == nil {
+		plan.Tags = tags
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
 func (r *WorkspacesImageResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
