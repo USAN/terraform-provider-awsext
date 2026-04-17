@@ -44,6 +44,7 @@ type WorkspacesBundleResourceModel struct {
 	RootStorageCapacity types.String `tfsdk:"root_storage_capacity"`
 	Owner               types.String `tfsdk:"owner"`
 	State               types.String `tfsdk:"state"`
+	Tags                types.Map    `tfsdk:"tags"`
 }
 
 func (r *WorkspacesBundleResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -125,6 +126,12 @@ func (r *WorkspacesBundleResource) Schema(ctx context.Context, req resource.Sche
 				Computed:    true,
 				Description: "The state of the bundle (AVAILABLE, PENDING, ERROR).",
 			},
+			"tags": schema.MapAttribute{
+				Optional:    true,
+				Computed:    true,
+				ElementType: types.StringType,
+				Description: "Tags to assign to the bundle.",
+			},
 		},
 	}
 }
@@ -176,6 +183,10 @@ func (r *WorkspacesBundleResource) Create(ctx context.Context, req resource.Crea
 		}
 	}
 
+	if tagList, err := tagsToList(ctx, data.Tags); err == nil {
+		input.Tags = tagList
+	}
+
 	output, err := conn.CreateWorkspaceBundle(ctx, input)
 
 	if err != nil {
@@ -190,6 +201,10 @@ func (r *WorkspacesBundleResource) Create(ctx context.Context, req resource.Crea
 	data.BundleId = types.StringValue(aws.ToString(bundle.BundleId))
 	data.Owner = types.StringValue(aws.ToString(bundle.Owner))
 	data.State = types.StringValue(string(bundle.State))
+
+	if tags, err := readResourceTags(ctx, conn, data.BundleId.ValueString()); err == nil {
+		data.Tags = tags
+	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -246,13 +261,18 @@ func (r *WorkspacesBundleResource) Read(ctx context.Context, req resource.ReadRe
 		data.RootStorageCapacity = types.StringNull()
 	}
 
+	if tags, err := readResourceTags(ctx, conn, data.BundleId.ValueString()); err == nil {
+		data.Tags = tags
+	}
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
 func (r *WorkspacesBundleResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var data WorkspacesBundleResourceModel
+	var plan, state WorkspacesBundleResourceModel
 
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -260,17 +280,27 @@ func (r *WorkspacesBundleResource) Update(ctx context.Context, req resource.Upda
 	conn := workspaces.NewFromConfig(r.config)
 
 	_, err := conn.UpdateWorkspaceBundle(ctx, &workspaces.UpdateWorkspaceBundleInput{
-		BundleId: aws.String(data.BundleId.ValueString()),
-		ImageId:  aws.String(data.ImageId.ValueString()),
+		BundleId: aws.String(plan.BundleId.ValueString()),
+		ImageId:  aws.String(plan.ImageId.ValueString()),
 	})
 
 	if err != nil {
 		resp.Diagnostics.AddError("Error updating WorkSpaces bundle",
-			fmt.Sprintf("Could not update WorkSpaces bundle %s, unexpected error: %s", data.BundleId.ValueString(), err))
+			fmt.Sprintf("Could not update WorkSpaces bundle %s, unexpected error: %s", plan.BundleId.ValueString(), err))
 		return
 	}
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	if err := updateResourceTags(ctx, conn, state.BundleId.ValueString(), state.Tags, plan.Tags); err != nil {
+		resp.Diagnostics.AddError("Error updating WorkSpaces bundle tags",
+			fmt.Sprintf("Could not update tags for WorkSpaces bundle %s, unexpected error: %s", plan.BundleId.ValueString(), err))
+		return
+	}
+
+	if tags, err := readResourceTags(ctx, conn, plan.BundleId.ValueString()); err == nil {
+		plan.Tags = tags
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
 func (r *WorkspacesBundleResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
