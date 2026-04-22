@@ -134,6 +134,7 @@ func (p *AwsExtProvider) Resources(ctx context.Context) []func() resource.Resour
 		NewWorkspacesBundleResource,
 		NewWorkspacesPoolRunningResource,
 		NewWorkspacesImagePermissionResource,
+		NewWorkspacesPoolResource,
 	}
 }
 
