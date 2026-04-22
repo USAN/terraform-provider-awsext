@@ -7,3 +7,4 @@ terraform.tfstate*
 *.plan
 *.tfbak
 *.exe
+.vscode
