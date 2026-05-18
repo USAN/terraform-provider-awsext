@@ -266,6 +266,16 @@ func (r *AppIntegrationsApplicationResource) Create(ctx context.Context, req res
 
 	conn := appintegrations.NewFromConfig(r.config)
 
+	// application_source_config is Required in the schema so it should never be nil in valid
+	// input, but guard here to produce a clear diagnostic rather than a nil-pointer panic.
+	if data.ApplicationSourceConfig == nil {
+		resp.Diagnostics.AddError(
+			"Missing application_source_config",
+			"application_source_config is required but was not provided. This is a provider bug; please report it.",
+		)
+		return
+	}
+
 	// Build ApplicationSourceConfig
 	srcConfig := &appintegrationstypes.ApplicationSourceConfig{
 		ExternalUrlConfig: &appintegrationstypes.ExternalUrlConfig{
@@ -541,20 +551,30 @@ func (r *AppIntegrationsApplicationResource) Update(ctx context.Context, req res
 		Name: aws.String(plan.Name.ValueString()),
 	}
 
-	if !plan.Description.IsNull() && !plan.Description.IsUnknown() {
-		in.Description = aws.String(plan.Description.ValueString())
-	}
+	// Always send description so that removing it from HCL clears the field on the API side.
+	// ValueString() returns "" for null/unknown, which is the API's clear semantics.
+	in.Description = aws.String(plan.Description.ValueString())
+
+	// Always send permissions so that removing the list from HCL clears all permissions.
+	// An empty slice signals the API to remove all existing permissions.
+	perms := []string{}
 	if !plan.Permissions.IsNull() && !plan.Permissions.IsUnknown() {
-		var perms []string
 		plan.Permissions.ElementsAs(ctx, &perms, false)
-		in.Permissions = perms
 	}
+	in.Permissions = perms
+
 	if !plan.InitializationTimeout.IsNull() && !plan.InitializationTimeout.IsUnknown() {
 		v := int32(plan.InitializationTimeout.ValueInt64())
 		in.InitializationTimeout = &v
 	}
+
+	// Always send iframe_config so that removing it from HCL clears the field.
+	// An empty IframeConfig (zero-value slices) signals the API to clear it.
+	ifc := &appintegrationstypes.IframeConfig{
+		Allow:   []string{},
+		Sandbox: []string{},
+	}
 	if plan.IframeConfig != nil {
-		ifc := &appintegrationstypes.IframeConfig{}
 		if !plan.IframeConfig.Allow.IsNull() && !plan.IframeConfig.Allow.IsUnknown() {
 			var allow []string
 			plan.IframeConfig.Allow.ElementsAs(ctx, &allow, false)
@@ -565,8 +585,8 @@ func (r *AppIntegrationsApplicationResource) Update(ctx context.Context, req res
 			plan.IframeConfig.Sandbox.ElementsAs(ctx, &sandbox, false)
 			ifc.Sandbox = sandbox
 		}
-		in.IframeConfig = ifc
 	}
+	in.IframeConfig = ifc
 
 	_, err := conn.UpdateApplication(ctx, in)
 	if err != nil {
