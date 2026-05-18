@@ -345,7 +345,7 @@ func (r *QConnectAIPromptResource) Delete(ctx context.Context, req resource.Dele
 
 func (r *QConnectAIPromptResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	parts := strings.Split(req.ID, "/")
-	if len(parts) != 2 {
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		resp.Diagnostics.AddError("Invalid import ID", "Expected <assistant_id>/<ai_prompt_id>")
 		return
 	}
