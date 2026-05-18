@@ -325,7 +325,9 @@ func (r *ConnectSecurityProfileResource) Read(ctx context.Context, req resource.
 		}
 	}
 
-	if len(allPerms) > 0 {
+	if len(allPerms) == 0 && data.Permissions.IsNull() {
+		// preserve null — user did not set permissions
+	} else if len(allPerms) > 0 {
 		perms, diags := types.ListValueFrom(ctx, types.StringType, allPerms)
 		resp.Diagnostics.Append(diags...)
 		if resp.Diagnostics.HasError() {
@@ -336,7 +338,9 @@ func (r *ConnectSecurityProfileResource) Read(ctx context.Context, req resource.
 		data.Permissions = types.ListValueMust(types.StringType, []attr.Value{})
 	}
 
-	if len(sp.AllowedAccessControlTags) > 0 {
+	if len(sp.AllowedAccessControlTags) == 0 && data.AllowedAccessControlTags.IsNull() {
+		// preserve null
+	} else if len(sp.AllowedAccessControlTags) > 0 {
 		aact, diags := types.MapValueFrom(ctx, types.StringType, sp.AllowedAccessControlTags)
 		resp.Diagnostics.Append(diags...)
 		if resp.Diagnostics.HasError() {
@@ -347,7 +351,9 @@ func (r *ConnectSecurityProfileResource) Read(ctx context.Context, req resource.
 		data.AllowedAccessControlTags = types.MapValueMust(types.StringType, map[string]attr.Value{})
 	}
 
-	if len(sp.TagRestrictedResources) > 0 {
+	if len(sp.TagRestrictedResources) == 0 && data.TagRestrictedResources.IsNull() {
+		// preserve null
+	} else if len(sp.TagRestrictedResources) > 0 {
 		trr, diags := types.ListValueFrom(ctx, types.StringType, sp.TagRestrictedResources)
 		resp.Diagnostics.Append(diags...)
 		if resp.Diagnostics.HasError() {
@@ -381,7 +387,7 @@ func (r *ConnectSecurityProfileResource) Read(ctx context.Context, req resource.
 		}
 	}
 
-	appsList, err := flattenApplications(ctx, allApps)
+	appsList, err := flattenApplications(ctx, allApps, data.Applications.IsNull())
 	if err != nil {
 		resp.Diagnostics.AddError("Error flattening applications", err.Error())
 		return
@@ -544,7 +550,8 @@ func (r *ConnectSecurityProfileResource) ImportState(ctx context.Context, req re
 // -------------------------------------------------------------------
 
 // readInto is a shared helper for Create and Update to read back state after mutation.
-// It populates all computed/server-side fields of data in place and returns any diagnostics as a slice.
+// It populates all fields of data in place (including permissions and applications via
+// their respective list APIs) and returns any diagnostics as a slice of error strings.
 func (r *ConnectSecurityProfileResource) readInto(ctx context.Context, conn *connect.Client, data *ConnectSecurityProfileResourceModel) []string {
 	descOut, err := conn.DescribeSecurityProfile(ctx, &connect.DescribeSecurityProfileInput{
 		InstanceId:        aws.String(data.InstanceID.ValueString()),
@@ -564,6 +571,86 @@ func (r *ConnectSecurityProfileResource) readInto(ctx context.Context, conn *con
 	} else {
 		data.Description = types.StringNull()
 	}
+
+	// Paginate through ListSecurityProfilePermissions.
+	var allPerms []string
+	var permsNextToken *string
+	for {
+		listPermsOut, err := conn.ListSecurityProfilePermissions(ctx, &connect.ListSecurityProfilePermissionsInput{
+			InstanceId:        aws.String(data.InstanceID.ValueString()),
+			SecurityProfileId: aws.String(data.SecurityProfileID.ValueString()),
+			NextToken:         permsNextToken,
+		})
+		if err != nil {
+			return []string{fmt.Sprintf("Could not list permissions for Connect Security Profile %s: %s", data.SecurityProfileID.ValueString(), err)}
+		}
+		allPerms = append(allPerms, listPermsOut.Permissions...)
+		permsNextToken = listPermsOut.NextToken
+		if permsNextToken == nil {
+			break
+		}
+	}
+
+	if len(allPerms) == 0 && data.Permissions.IsNull() {
+		// preserve null — user did not set permissions
+	} else if len(allPerms) > 0 {
+		perms, diags := types.ListValueFrom(ctx, types.StringType, allPerms)
+		if diags.HasError() {
+			return []string{fmt.Sprintf("Could not flatten permissions for Connect Security Profile %s", data.SecurityProfileID.ValueString())}
+		}
+		data.Permissions = perms
+	} else {
+		data.Permissions = types.ListValueMust(types.StringType, []attr.Value{})
+	}
+
+	if len(sp.AllowedAccessControlTags) == 0 && data.AllowedAccessControlTags.IsNull() {
+		// preserve null
+	} else if len(sp.AllowedAccessControlTags) > 0 {
+		aact, diags := types.MapValueFrom(ctx, types.StringType, sp.AllowedAccessControlTags)
+		if diags.HasError() {
+			return []string{fmt.Sprintf("Could not flatten allowed_access_control_tags for Connect Security Profile %s", data.SecurityProfileID.ValueString())}
+		}
+		data.AllowedAccessControlTags = aact
+	} else {
+		data.AllowedAccessControlTags = types.MapValueMust(types.StringType, map[string]attr.Value{})
+	}
+
+	if len(sp.TagRestrictedResources) == 0 && data.TagRestrictedResources.IsNull() {
+		// preserve null
+	} else if len(sp.TagRestrictedResources) > 0 {
+		trr, diags := types.ListValueFrom(ctx, types.StringType, sp.TagRestrictedResources)
+		if diags.HasError() {
+			return []string{fmt.Sprintf("Could not flatten tag_restricted_resources for Connect Security Profile %s", data.SecurityProfileID.ValueString())}
+		}
+		data.TagRestrictedResources = trr
+	} else {
+		data.TagRestrictedResources = types.ListValueMust(types.StringType, []attr.Value{})
+	}
+
+	// Paginate through ListSecurityProfileApplications.
+	var allApps []conntypes.Application
+	var appsNextToken *string
+	for {
+		listAppsOut, err := conn.ListSecurityProfileApplications(ctx, &connect.ListSecurityProfileApplicationsInput{
+			InstanceId:        aws.String(data.InstanceID.ValueString()),
+			SecurityProfileId: aws.String(data.SecurityProfileID.ValueString()),
+			NextToken:         appsNextToken,
+		})
+		if err != nil {
+			return []string{fmt.Sprintf("Could not list applications for Connect Security Profile %s: %s", data.SecurityProfileID.ValueString(), err)}
+		}
+		allApps = append(allApps, listAppsOut.Applications...)
+		appsNextToken = listAppsOut.NextToken
+		if appsNextToken == nil {
+			break
+		}
+	}
+
+	appsList, err := flattenApplications(ctx, allApps, data.Applications.IsNull())
+	if err != nil {
+		return []string{fmt.Sprintf("Could not flatten applications for Connect Security Profile %s: %s", data.SecurityProfileID.ValueString(), err)}
+	}
+	data.Applications = appsList
 
 	tags, err := readConnectTags(ctx, conn, data.SecurityProfileArn.ValueString())
 	if err != nil {
@@ -609,10 +696,15 @@ func expandApplications(ctx context.Context, list types.List) ([]conntypes.Appli
 }
 
 // flattenApplications converts []conntypes.Application into a types.List of application objects.
-func flattenApplications(ctx context.Context, apps []conntypes.Application) (types.List, error) {
+// When apps is empty and preserveNull is true, it returns a null list to avoid persistent diffs
+// when the user did not configure the applications attribute.
+func flattenApplications(ctx context.Context, apps []conntypes.Application, preserveNull bool) (types.List, error) {
 	elemType := applicationObjectType
 
 	if len(apps) == 0 {
+		if preserveNull {
+			return types.ListNull(elemType), nil
+		}
 		return types.ListValueMust(elemType, []attr.Value{}), nil
 	}
 
