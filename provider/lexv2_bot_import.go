@@ -90,7 +90,7 @@ func (r *LexV2BotImportResource) Schema(ctx context.Context, req resource.Schema
 			},
 			"zip_file_path": schema.StringAttribute{
 				Optional:    true,
-				Sensitive:   true,
+				WriteOnly:   true,
 				Description: "Local path to the zip archive containing the bot definition. Exactly one of zip_file_path or zip_content_base64 must be set. Not stored in state.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
@@ -98,7 +98,7 @@ func (r *LexV2BotImportResource) Schema(ctx context.Context, req resource.Schema
 			},
 			"zip_content_base64": schema.StringAttribute{
 				Optional:    true,
-				Sensitive:   true,
+				WriteOnly:   true,
 				Description: "Base64-encoded zip archive containing the bot definition. Exactly one of zip_file_path or zip_content_base64 must be set. Not stored in state.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
@@ -135,7 +135,7 @@ func (r *LexV2BotImportResource) Schema(ctx context.Context, req resource.Schema
 			},
 			"import_on_exists": schema.BoolAttribute{
 				Optional:    true,
-				Sensitive:   true,
+				WriteOnly:   true,
 				Description: "When true, if a bot matching the name in import_resource_specification already exists, adopt it into state instead of running the import. Not stored in state.",
 			},
 			"import_status": schema.StringAttribute{
@@ -191,7 +191,14 @@ func (r *LexV2BotImportResource) Configure(ctx context.Context, req resource.Con
 
 func (r *LexV2BotImportResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var data LexV2BotImportResourceModel
+	var importOnExists types.Bool
+	var zipFilePath types.String
+	var zipContentBase64 types.String
+
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("import_on_exists"), &importOnExists)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("zip_file_path"), &zipFilePath)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("zip_content_base64"), &zipContentBase64)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -199,7 +206,7 @@ func (r *LexV2BotImportResource) Create(ctx context.Context, req resource.Create
 	lexClient := lexmodelsv2.NewFromConfig(r.config)
 
 	// Step 2: if import_on_exists, check for existing bot by name.
-	if !data.ImportOnExists.IsNull() && !data.ImportOnExists.IsUnknown() && data.ImportOnExists.ValueBool() {
+	if !importOnExists.IsNull() && !importOnExists.IsUnknown() && importOnExists.ValueBool() {
 		botName, err := extractBotNameFromSpec(data.ImportResourceSpecification.ValueString())
 		if err == nil && botName != "" {
 			botID, found, findErr := r.findBotByName(ctx, lexClient, botName)
@@ -236,14 +243,14 @@ func (r *LexV2BotImportResource) Create(ctx context.Context, req resource.Create
 
 	// Step 4: Read zip bytes.
 	var zipBytes []byte
-	if !data.ZipFilePath.IsNull() && !data.ZipFilePath.IsUnknown() && data.ZipFilePath.ValueString() != "" {
-		zipBytes, err = os.ReadFile(data.ZipFilePath.ValueString())
+	if !zipFilePath.IsNull() && !zipFilePath.IsUnknown() && zipFilePath.ValueString() != "" {
+		zipBytes, err = os.ReadFile(zipFilePath.ValueString())
 		if err != nil {
-			resp.Diagnostics.AddError("Error reading zip file", fmt.Sprintf("Could not read %s: %s", data.ZipFilePath.ValueString(), err))
+			resp.Diagnostics.AddError("Error reading zip file", fmt.Sprintf("Could not read %s: %s", zipFilePath.ValueString(), err))
 			return
 		}
 	} else {
-		zipBytes, err = base64.StdEncoding.DecodeString(data.ZipContentBase64.ValueString())
+		zipBytes, err = base64.StdEncoding.DecodeString(zipContentBase64.ValueString())
 		if err != nil {
 			resp.Diagnostics.AddError("Error decoding zip_content_base64", err.Error())
 			return
