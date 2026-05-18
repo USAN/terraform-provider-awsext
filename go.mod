@@ -7,6 +7,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.31.8
 	github.com/aws/aws-sdk-go-v2/credentials v1.18.12
 	github.com/aws/aws-sdk-go-v2/service/connect v1.139.1
+	github.com/aws/aws-sdk-go-v2/service/qconnect v1.31.0
 	github.com/aws/aws-sdk-go-v2/service/sts v1.38.4
 	github.com/aws/aws-sdk-go-v2/service/workspaces v1.67.2
 	github.com/hashicorp/terraform-plugin-docs v0.23.0
