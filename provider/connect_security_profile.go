@@ -423,47 +423,44 @@ func (r *ConnectSecurityProfileResource) Update(ctx context.Context, req resourc
 		SecurityProfileId: aws.String(state.SecurityProfileID.ValueString()),
 	}
 
-	if !plan.Description.IsNull() && !plan.Description.IsUnknown() {
-		in.Description = aws.String(plan.Description.ValueString())
-	}
+	// Always send mutable fields so that removing a value from config (null) clears it on AWS.
+	in.Description = aws.String(plan.Description.ValueString()) // empty string clears it
 
+	var perms []string
 	if !plan.Permissions.IsNull() && !plan.Permissions.IsUnknown() {
-		var perms []string
 		resp.Diagnostics.Append(plan.Permissions.ElementsAs(ctx, &perms, false)...)
 		if resp.Diagnostics.HasError() {
 			return
 		}
-		in.Permissions = perms
 	}
+	in.Permissions = perms // empty slice clears them
 
-	if !plan.Applications.IsNull() && !plan.Applications.IsUnknown() {
-		apps, err := expandApplications(ctx, plan.Applications)
-		if err != nil {
-			resp.Diagnostics.AddError("Error expanding applications", err.Error())
-			return
-		}
-		in.Applications = apps
+	apps, err := expandApplications(ctx, plan.Applications)
+	if err != nil {
+		resp.Diagnostics.AddError("Error expanding applications", err.Error())
+		return
 	}
+	in.Applications = apps // nil/empty slice clears them
 
+	var aacTags map[string]string
 	if !plan.AllowedAccessControlTags.IsNull() && !plan.AllowedAccessControlTags.IsUnknown() {
-		var tagMap map[string]string
-		resp.Diagnostics.Append(plan.AllowedAccessControlTags.ElementsAs(ctx, &tagMap, false)...)
+		resp.Diagnostics.Append(plan.AllowedAccessControlTags.ElementsAs(ctx, &aacTags, false)...)
 		if resp.Diagnostics.HasError() {
 			return
 		}
-		in.AllowedAccessControlTags = tagMap
 	}
+	in.AllowedAccessControlTags = aacTags // nil map clears them
 
+	var trr []string
 	if !plan.TagRestrictedResources.IsNull() && !plan.TagRestrictedResources.IsUnknown() {
-		var resources []string
-		resp.Diagnostics.Append(plan.TagRestrictedResources.ElementsAs(ctx, &resources, false)...)
+		resp.Diagnostics.Append(plan.TagRestrictedResources.ElementsAs(ctx, &trr, false)...)
 		if resp.Diagnostics.HasError() {
 			return
 		}
-		in.TagRestrictedResources = resources
 	}
+	in.TagRestrictedResources = trr // empty slice clears them
 
-	_, err := conn.UpdateSecurityProfile(ctx, in)
+	_, err = conn.UpdateSecurityProfile(ctx, in)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error updating Connect Security Profile",
