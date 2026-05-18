@@ -6,16 +6,20 @@ Creates and manages an Amazon Q in Connect AI Prompt (`qconnect:CreateAIPrompt`)
 
 ```hcl
 resource "awsext_qconnect_ai_prompt" "example" {
-  assistant_id  = awsext_qconnect_assistant.example.assistant_id
-  name          = "example-prompt"
-  type          = "ANSWER_GENERATION"
-  api_format    = "ANTHROPIC_CLAUDE_MESSAGES"
-  model_id      = "anthropic.claude-3-5-sonnet-20240620-v1:0"
-  template_type = "TEXT"
-  template_configuration = jsonencode({
-    template = "You are an assistant. Respond to: {{question}}"
-  })
+  assistant_id      = awsext_qconnect_assistant.example.assistant_id
+  name              = "example-prompt"
+  type              = "ANSWER_GENERATION"
+  api_format        = "ANTHROPIC_CLAUDE_MESSAGES"
+  model_id          = "anthropic.claude-3-5-sonnet-20240620-v1:0"
+  template_type     = "TEXT"
   visibility_status = "PUBLISHED"
+
+  template_configuration = <<-YAML
+    system: You are a helpful assistant.
+    messages:
+      - role: user
+        content: "{{question}}"
+  YAML
 }
 ```
 
@@ -29,7 +33,7 @@ The following arguments are supported:
 - `api_format` - (Required, Forces new resource) API format for the AI Prompt. One of `ANTHROPIC_CLAUDE_MESSAGES`, `ANTHROPIC_CLAUDE_TEXT_COMPLETIONS`, `MESSAGES`, `TEXT_COMPLETIONS`. The `ANTHROPIC_CLAUDE_*` variants are deprecated; prefer `MESSAGES` or `TEXT_COMPLETIONS`.
 - `model_id` - (Required, Forces new resource) Identifier of the model used for this AI Prompt (e.g. `anthropic.claude-3-5-sonnet-20240620-v1:0`).
 - `template_type` - (Required, Forces new resource) Type of the prompt template. Currently the only supported value is `TEXT`.
-- `template_configuration` - (Required) JSON document representing the template configuration. For `template_type = "TEXT"` this is a JSON object with a `text` key containing the prompt. Whitespace and key-order differences between the plan and the API-returned form are suppressed.
+- `template_configuration` - (Required) YAML text for the AI Prompt template, passed verbatim to the qconnect API. The `NormalizeJSONString` plan modifier suppresses cosmetic whitespace-only diffs for users who choose to pass JSON instead of YAML.
 - `visibility_status` - (Optional) Visibility status of the AI Prompt. One of `PUBLISHED` or `SAVED`. Defaults to `SAVED` when omitted.
 - `description` - (Optional, Forces new resource) Description of the AI Prompt.
 - `tags` - (Optional) Tags to assign to the AI Prompt.

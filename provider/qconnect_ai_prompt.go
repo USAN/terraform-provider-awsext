@@ -5,7 +5,6 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -107,9 +106,8 @@ func (r *QConnectAIPromptResource) Schema(ctx context.Context, req resource.Sche
 			},
 			"template_configuration": schema.StringAttribute{
 				Required: true,
-				MarkdownDescription: "JSON document representing the template configuration for this AI Prompt. " +
-					"For `template_type = \"TEXT\"` this is a JSON object with a `text` key containing the YAML prompt. " +
-					"Whitespace and key-order differences between the plan and the API-returned form are suppressed.",
+				MarkdownDescription: "YAML text for the AI Prompt template (passed verbatim to the qconnect API). " +
+					"The `NormalizeJSONString` plan modifier suppresses cosmetic whitespace-only diffs if the content happens to be JSON.",
 				PlanModifiers: []planmodifier.String{NormalizeJSONString()},
 			},
 			"visibility_status": schema.StringAttribute{
@@ -157,11 +155,7 @@ func (r *QConnectAIPromptResource) Create(ctx context.Context, req resource.Crea
 
 	conn := qconnect.NewFromConfig(r.config)
 
-	templateConfig, err := buildTemplateConfiguration(data.TemplateType.ValueString(), data.TemplateConfiguration.ValueString())
-	if err != nil {
-		resp.Diagnostics.AddError("Error building template configuration", err.Error())
-		return
-	}
+	templateConfig := buildTemplateConfiguration(data.TemplateConfiguration.ValueString())
 
 	visibilityStatus := qconnecttypes.VisibilityStatusSaved
 	if !data.VisibilityStatus.IsNull() && !data.VisibilityStatus.IsUnknown() && data.VisibilityStatus.ValueString() != "" {
@@ -203,10 +197,12 @@ func (r *QConnectAIPromptResource) Create(ctx context.Context, req resource.Crea
 	data.AiPromptArn = types.StringValue(aws.ToString(out.AiPrompt.AiPromptArn))
 	data.VisibilityStatus = types.StringValue(string(out.AiPrompt.VisibilityStatus))
 
-	// Normalize the template_configuration JSON from the API response.
-	if normalized, err := flattenTemplateConfiguration(out.AiPrompt.TemplateConfiguration); err == nil {
-		data.TemplateConfiguration = types.StringValue(normalized)
+	cfg, err := flattenTemplateConfiguration(out.AiPrompt.TemplateConfiguration)
+	if err != nil {
+		resp.Diagnostics.AddError("Error reading template configuration", err.Error())
+		return
 	}
+	data.TemplateConfiguration = types.StringValue(cfg)
 
 	if tags, err := readQConnectTags(ctx, conn, data.AiPromptArn.ValueString()); err == nil {
 		data.Tags = tags
@@ -258,9 +254,12 @@ func (r *QConnectAIPromptResource) Read(ctx context.Context, req resource.ReadRe
 		data.Description = types.StringNull()
 	}
 
-	if normalized, err := flattenTemplateConfiguration(out.AiPrompt.TemplateConfiguration); err == nil {
-		data.TemplateConfiguration = types.StringValue(normalized)
+	readCfg, err := flattenTemplateConfiguration(out.AiPrompt.TemplateConfiguration)
+	if err != nil {
+		resp.Diagnostics.AddError("Error reading template configuration", err.Error())
+		return
 	}
+	data.TemplateConfiguration = types.StringValue(readCfg)
 
 	if tags, err := readQConnectTags(ctx, conn, data.AiPromptArn.ValueString()); err == nil {
 		data.Tags = tags
@@ -279,11 +278,7 @@ func (r *QConnectAIPromptResource) Update(ctx context.Context, req resource.Upda
 
 	conn := qconnect.NewFromConfig(r.config)
 
-	templateConfig, err := buildTemplateConfiguration(plan.TemplateType.ValueString(), plan.TemplateConfiguration.ValueString())
-	if err != nil {
-		resp.Diagnostics.AddError("Error building template configuration", err.Error())
-		return
-	}
+	templateConfig := buildTemplateConfiguration(plan.TemplateConfiguration.ValueString())
 
 	visibilityStatus := qconnecttypes.VisibilityStatusSaved
 	if !plan.VisibilityStatus.IsNull() && !plan.VisibilityStatus.IsUnknown() && plan.VisibilityStatus.ValueString() != "" {
@@ -305,9 +300,12 @@ func (r *QConnectAIPromptResource) Update(ctx context.Context, req resource.Upda
 
 	plan.VisibilityStatus = types.StringValue(string(out.AiPrompt.VisibilityStatus))
 
-	if normalized, err := flattenTemplateConfiguration(out.AiPrompt.TemplateConfiguration); err == nil {
-		plan.TemplateConfiguration = types.StringValue(normalized)
+	updateCfg, err := flattenTemplateConfiguration(out.AiPrompt.TemplateConfiguration)
+	if err != nil {
+		resp.Diagnostics.AddError("Error reading template configuration", err.Error())
+		return
 	}
+	plan.TemplateConfiguration = types.StringValue(updateCfg)
 
 	if err := updateQConnectTags(ctx, conn, state.AiPromptArn.ValueString(), state.Tags, plan.Tags); err != nil {
 		resp.Diagnostics.AddError("Error updating Q in Connect AI Prompt tags", err.Error())
@@ -354,40 +352,23 @@ func (r *QConnectAIPromptResource) ImportState(ctx context.Context, req resource
 }
 
 // buildTemplateConfiguration constructs the SDK union type for TemplateConfiguration.
-// Currently only "TEXT" template type is supported.
-func buildTemplateConfiguration(templateType, jsonStr string) (qconnecttypes.AIPromptTemplateConfiguration, error) {
-	switch templateType {
-	case "TEXT":
-		// The JSON string represents the content; we store/pass the raw JSON as the text.
-		return &qconnecttypes.AIPromptTemplateConfigurationMemberTextFullAIPromptEditTemplateConfiguration{
-			Value: qconnecttypes.TextFullAIPromptEditTemplateConfiguration{
-				Text: aws.String(jsonStr),
-			},
-		}, nil
-	default:
-		return nil, fmt.Errorf("unsupported template_type %q", templateType)
+// The input text is passed verbatim (YAML or any string) to the API.
+func buildTemplateConfiguration(text string) qconnecttypes.AIPromptTemplateConfiguration {
+	return &qconnecttypes.AIPromptTemplateConfigurationMemberTextFullAIPromptEditTemplateConfiguration{
+		Value: qconnecttypes.TextFullAIPromptEditTemplateConfiguration{
+			Text: aws.String(text),
+		},
 	}
 }
 
-// flattenTemplateConfiguration extracts a JSON string from the SDK union type.
+// flattenTemplateConfiguration extracts the plain text string from the SDK union type.
 func flattenTemplateConfiguration(cfg qconnecttypes.AIPromptTemplateConfiguration) (string, error) {
 	if cfg == nil {
-		return "", fmt.Errorf("template configuration is nil")
+		return "", fmt.Errorf("nil template configuration")
 	}
-	switch v := cfg.(type) {
-	case *qconnecttypes.AIPromptTemplateConfigurationMemberTextFullAIPromptEditTemplateConfiguration:
-		text := aws.ToString(v.Value.Text)
-		// If the text is already valid JSON, return it normalized.
-		if normalized, err := canonicalizeJSON(text); err == nil {
-			return normalized, nil
-		}
-		// Otherwise treat as a plain string and marshal it to JSON.
-		raw, err := json.Marshal(text)
-		if err != nil {
-			return "", err
-		}
-		return string(raw), nil
-	default:
+	v, ok := cfg.(*qconnecttypes.AIPromptTemplateConfigurationMemberTextFullAIPromptEditTemplateConfiguration)
+	if !ok {
 		return "", fmt.Errorf("unsupported template configuration type %T", cfg)
 	}
+	return aws.ToString(v.Value.Text), nil
 }
