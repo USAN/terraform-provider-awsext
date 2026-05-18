@@ -76,7 +76,7 @@ func (r *ConnectIntegrationAssociationResource) Schema(ctx context.Context, req 
 			},
 			"integration_type": schema.StringAttribute{
 				Required:    true,
-				Description: "The type of information to be ingested. Valid values: `EVENT`, `VOICE_ID`, `PINPOINT_APP`, `WISDOM_ASSISTANT`, `WISDOM_KNOWLEDGE_BASE`, `WISDOM_QUICK_RESPONSES`, `Q_MESSAGE_TEMPLATES`, `CASES_DOMAIN`, `APPLICATION`, `FILE_SCANNER`, `SES_IDENTITY`, `ANALYTICS_CONNECTOR`, `CALL_TRANSFER_CONNECTOR`, `COGNITO_USER_POOL`. Forces replacement.",
+				Description: "The type of information to be ingested. Valid values: `EVENT`, `VOICE_ID`, `PINPOINT_APP`, `WISDOM_ASSISTANT`, `WISDOM_KNOWLEDGE_BASE`, `WISDOM_QUICK_RESPONSES`, `CASES_DOMAIN`, `APPLICATION`, `FILE_SCANNER`, `Q_MESSAGE_TEMPLATES`, `SES_IDENTITY`. Forces replacement.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
@@ -88,14 +88,11 @@ func (r *ConnectIntegrationAssociationResource) Schema(ctx context.Context, req 
 						"WISDOM_ASSISTANT",
 						"WISDOM_KNOWLEDGE_BASE",
 						"WISDOM_QUICK_RESPONSES",
-						"Q_MESSAGE_TEMPLATES",
 						"CASES_DOMAIN",
 						"APPLICATION",
 						"FILE_SCANNER",
+						"Q_MESSAGE_TEMPLATES",
 						"SES_IDENTITY",
-						"ANALYTICS_CONNECTOR",
-						"CALL_TRANSFER_CONNECTOR",
-						"COGNITO_USER_POOL",
 					),
 				},
 			},
@@ -225,9 +222,12 @@ func (r *ConnectIntegrationAssociationResource) Create(ctx context.Context, req 
 	data.IntegrationAssociationID = types.StringValue(aws.ToString(out.IntegrationAssociationId))
 	data.IntegrationAssociationArn = types.StringValue(aws.ToString(out.IntegrationAssociationArn))
 
-	if tags, err := readConnectTags(ctx, conn, data.IntegrationAssociationArn.ValueString()); err == nil {
-		data.Tags = tags
+	tags, err := readConnectTags(ctx, conn, data.IntegrationAssociationArn.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("Error reading Connect Integration Association tags", fmt.Sprintf("Could not read tags: %s", err))
+		return
 	}
+	data.Tags = tags
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -249,11 +249,15 @@ func (r *ConnectIntegrationAssociationResource) Read(ctx context.Context, req re
 	var nextToken *string
 
 	for {
-		listOut, err := conn.ListIntegrationAssociations(ctx, &connect.ListIntegrationAssociationsInput{
-			InstanceId:      aws.String(data.InstanceID.ValueString()),
-			IntegrationType: conntypes.IntegrationType(data.IntegrationType.ValueString()),
-			NextToken:       nextToken,
-		})
+		listInput := &connect.ListIntegrationAssociationsInput{
+			InstanceId: aws.String(data.InstanceID.ValueString()),
+			// Only filter by type if we have one (not present during post-import read)
+			NextToken: nextToken,
+		}
+		if !data.IntegrationType.IsNull() && !data.IntegrationType.IsUnknown() && data.IntegrationType.ValueString() != "" {
+			listInput.IntegrationType = conntypes.IntegrationType(data.IntegrationType.ValueString())
+		}
+		listOut, err := conn.ListIntegrationAssociations(ctx, listInput)
 		if err != nil {
 			resp.Diagnostics.AddError(
 				"Error reading Connect Integration Associations",
@@ -308,9 +312,12 @@ func (r *ConnectIntegrationAssociationResource) Read(ctx context.Context, req re
 		data.SourceType = types.StringNull()
 	}
 
-	if tags, err := readConnectTags(ctx, conn, data.IntegrationAssociationArn.ValueString()); err == nil {
-		data.Tags = tags
+	tags, err := readConnectTags(ctx, conn, data.IntegrationAssociationArn.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("Error reading Connect Integration Association tags", fmt.Sprintf("Could not read tags: %s", err))
+		return
 	}
+	data.Tags = tags
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -341,9 +348,12 @@ func (r *ConnectIntegrationAssociationResource) Update(ctx context.Context, req 
 	plan.IntegrationAssociationID = state.IntegrationAssociationID
 	plan.IntegrationAssociationArn = state.IntegrationAssociationArn
 
-	if tags, err := readConnectTags(ctx, conn, state.IntegrationAssociationArn.ValueString()); err == nil {
-		plan.Tags = tags
+	tags, err := readConnectTags(ctx, conn, state.IntegrationAssociationArn.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("Error reading Connect Integration Association tags", fmt.Sprintf("Could not read tags: %s", err))
+		return
 	}
+	plan.Tags = tags
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
@@ -398,11 +408,6 @@ func (r *ConnectIntegrationAssociationResource) ImportState(ctx context.Context,
 
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("instance_id"), parts[0])...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("integration_association_id"), parts[1])...)
-
-	// integration_type is required for the Read pagination filter; seed it with a placeholder
-	// that will be overwritten once the real Read populates the full state from the list API.
-	// In practice, the user must also set integration_type in their config for import to work
-	// correctly on the first refresh. We set it empty-string here; the Read will handle it if
-	// the state already has a value (import will re-read via plan).
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("integration_type"), "")...)
+	// integration_type is intentionally left unset here; the subsequent Read will populate it
+	// from the ListIntegrationAssociations API response, which now handles an absent type.
 }
