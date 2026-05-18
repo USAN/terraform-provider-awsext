@@ -1,0 +1,206 @@
+# terraform-provider-awsext - Project Context & Regeneration Prompt
+
+## Purpose
+
+Custom Terraform provider (registry.terraform.io/usan/awsext) maintained by USAN to expose AWS API
+operations missing from the official hashicorp/aws provider. Avoids maintaining a fork of
+terraform-provider-aws.
+
+## Stack
+
+- Language: Go 1.24
+- Module path: github.com/USAN/terraform-provider-awsext
+- Provider source: registry.terraform.io/usan/awsext
+- Framework: Terraform Plugin Framework v1.16.0
+- AWS SDK: aws-sdk-go-v2 (v1.41.5 core, workspaces v1.67.2, connect v1.139.1, sts v1.38.4)
+
+## Architecture Decisions
+
+- Uses Terraform Plugin Framework (not the legacy terraform-plugin-sdk v2)
+- Provider Configure loads aws.Config and sets it as resp.ResourceData; each resource receives
+  it via req.ProviderData.(aws.Config) in its own Configure method
+- AWS credentials support: static access/secret keys, named profile, STS assume role
+- Custom retry policy: 20 max attempts, 10-second backoff
+- Resources use errors.As for strongly-typed AWS SDK v2 error handling
+- Identity schemas used where import requires multiple attributes (e.g. Connect agent status)
+- No acceptance tests currently implemented
+
+## Resources
+
+### awsext_connect_agent_status
+- File: provider/agent_status.go
+- APIs: CreateAgentStatus, DescribeAgentStatus, UpdateAgentStatus, ListAgentStatuses
+- Supports import_on_exists write-only flag to import an existing status instead of erroring on create
+- Identity schema: arn + agent_status_id
+
+### awsext_workspaces_streaming_properties
+- File: provider/workspaces_streaming_properties.go
+- APIs: ModifyStreamingProperties (C/U), DescribeWorkspaceDirectories (R)
+- Delete is no-op (no AWS delete API); import by directory_id
+- Nested lists: storage_connectors (connector_type, status), user_settings (action, permission, maximum_length)
+
+### awsext_workspaces_image
+- File: provider/workspaces_image.go
+- APIs: CreateWorkspaceImage (C), DescribeWorkspaceImages (R), DeleteWorkspaceImage (D)
+- All user-facing fields use RequiresReplace (no update API exists); tags updatable in-place; import by image_id
+
+### awsext_workspaces_image_copy
+- File: provider/workspaces_image_copy.go
+- APIs: CopyWorkspaceImage (C), DescribeWorkspaceImages (R), DeleteWorkspaceImage (D)
+- Calls DescribeWorkspaceImages immediately after copy to populate owner_account_id
+- Tags updatable in-place; import by image_id
+
+### awsext_workspaces_bundle
+- File: provider/workspaces_bundle.go
+- APIs: CreateWorkspaceBundle (C), DescribeWorkspaceBundles (R), UpdateWorkspaceBundle (U), DeleteWorkspaceBundle (D)
+- image_id and tags updatable in-place; other fields use RequiresReplace; import by bundle_id
+
+### awsext_workspaces_pool_running
+- File: provider/workspaces_pool_running.go
+- APIs: StartWorkspacesPool (C), DescribeWorkspacesPools (R), StopWorkspacesPool (D)
+- Manages run-state only -- the pool itself must already exist; import by pool_id
+- Read removes from state when pool is STOPPED/STOPPING/DELETING
+
+### awsext_workspaces_image_permission
+- File: provider/workspaces_image_permission.go
+- APIs: UpdateWorkspaceImagePermission (C/D), DescribeWorkspaceImagePermissions (R)
+- Create: AllowCopyImage=true; Delete: AllowCopyImage=false
+- Import format: image_id/shared_account_id
+
+### awsext_workspaces_pool
+- File: provider/workspaces_pool.go
+- APIs: CreateWorkspacesPool (C), DescribeWorkspacesPools (R), UpdateWorkspacesPool (U), TerminateWorkspacesPool (D)
+- Full lifecycle management of a WorkSpaces pool
+- Schema: pool_id/pool_arn/state (computed), pool_name/bundle_id/directory_id (required, RequiresReplace),
+  description/running_mode (optional, updatable), desired_user_sessions (optional int32, updatable),
+  application_settings (optional single nested: status/settings_group),
+  timeout_settings (optional single nested: disconnect/idle_disconnect/max_user_duration seconds),
+  tags (optional+computed)
+- Uses TerminateWorkspacesPool for delete (permanent removal, not pause)
+- Import by pool_id
+
+### awsext_qconnect_assistant
+- File: provider/qconnect_assistant.go
+- APIs: CreateAssistant (C), GetAssistant (R), DeleteAssistant (D); tags via TagResource/UntagResource
+- All non-tag fields RequiresReplace; tags updatable in place; import by assistant_id
+
+### awsext_qconnect_ai_prompt
+- File: provider/qconnect_ai_prompt.go
+- APIs: CreateAIPrompt (C), GetAIPrompt (R), UpdateAIPrompt (U), DeleteAIPrompt (D); tags via TagResource/UntagResource
+- template_configuration is plain YAML text; type attribute required; import by <assistant_id>/<ai_prompt_id>
+
+### awsext_qconnect_ai_guardrail
+- File: provider/qconnect_ai_guardrail.go
+- APIs: CreateAIGuardrail (C), GetAIGuardrail (R), UpdateAIGuardrail (U), DeleteAIGuardrail (D); tags via TagResource/UntagResource
+- Full nested policy blocks (content, topic, word, sensitive_information, contextual_grounding); import by <assistant_id>/<ai_guardrail_id>
+
+### awsext_qconnect_ai_guardrail_version
+- File: provider/qconnect_ai_guardrail_version.go
+- APIs: CreateAIGuardrailVersion (C), GetAIGuardrail versioned (R), DeleteAIGuardrailVersion (D)
+- Immutable after creation; guardrail_arn_with_version computed; import by <assistant_id>/<ai_guardrail_id>/<version_number>
+
+### awsext_qconnect_ai_agent
+- File: provider/qconnect_ai_agent.go
+- APIs: CreateAIAgent (C), GetAIAgent (R), UpdateAIAgent (U), DeleteAIAgent (D); tags via TagResource/UntagResource
+- configuration is opaque JSON string; import by <assistant_id>/<ai_agent_id>
+
+### awsext_qconnect_assistant_association
+- File: provider/qconnect_assistant_association.go
+- APIs: CreateAssistantAssociation (C), GetAssistantAssociation (R), DeleteAssistantAssociation (D); tags via TagResource/UntagResource
+- Supports KB and external association types; import by <assistant_id>/<association_id>
+
+### awsext_appintegrations_application
+- File: provider/appintegrations_application.go
+- APIs: CreateApplication (C), GetApplication (R), UpdateApplication (U), DeleteApplication (D); inline tag helpers
+- Supports MCP_SERVER and other app types; import by application ARN
+
+### awsext_connect_integration_association
+- File: provider/connect_integration_association.go
+- APIs: CreateIntegrationAssociation (C), ListIntegrationAssociations (R, paginated), DeleteIntegrationAssociation (D)
+- Supports APPLICATION and WISDOM_ASSISTANT types missing from official provider; import by <instance_id>/<integration_association_id>
+
+### awsext_connect_security_profile
+- File: provider/connect_security_profile.go
+- APIs: CreateSecurityProfile (C), DescribeSecurityProfile + ListSecurityProfileApplications + ListSecurityProfilePermissions (R), UpdateSecurityProfile (U), DeleteSecurityProfile (D)
+- Exposes applications field missing from official provider; import by <instance_id>/<security_profile_id>
+
+### awsext_lexv2_bot_import
+- File: provider/lexv2_bot_import.go
+- APIs: CreateUploadUrl + HTTP PUT + StartImport + DescribeImport poll + DescribeBot (C), DescribeBot (R), DeleteBot (D)
+- Multi-step import flow with polling; import_on_exists support; import by bot_id
+
+### awsext_lexv2_bot_locale_build
+- File: provider/lexv2_bot_locale_build.go
+- APIs: BuildBotLocale (C trigger), DescribeBotLocale poll (C), DescribeBotLocale (R), no-op Delete
+- Build trigger resource; source_hash drives rebuilds; import by <bot_id>/<bot_version>/<locale_id>/<source_hash>
+
+## File Structure
+
+provider/
+  provider.go                         - Provider schema, Configure, Resources registration
+  agent_status.go                     - awsext_connect_agent_status
+  workspaces_streaming_properties.go  - awsext_workspaces_streaming_properties
+  workspaces_image.go                 - awsext_workspaces_image
+  workspaces_image_copy.go            - awsext_workspaces_image_copy
+  workspaces_bundle.go                - awsext_workspaces_bundle
+  workspaces_pool_running.go          - awsext_workspaces_pool_running
+  workspaces_image_permission.go      - awsext_workspaces_image_permission
+  workspaces_pool.go                  - awsext_workspaces_pool
+  workspaces_tags.go                  - Shared tag helpers (readResourceTags, updateResourceTags, tagsToList)
+  qconnect_tags.go
+  jsonstring.go
+  qconnect_helpers.go
+  qconnect_assistant.go
+  qconnect_ai_prompt.go
+  qconnect_ai_guardrail.go
+  qconnect_ai_guardrail_version.go
+  qconnect_ai_agent.go
+  qconnect_assistant_association.go
+  appintegrations_application.go
+  connect_integration_association.go
+  connect_security_profile.go
+  lexv2_bot_import.go
+  lexv2_bot_locale_build.go
+
+---
+
+## Regeneration Prompt
+
+You are building a Terraform provider called terraform-provider-awsext for USAN
+(registry.terraform.io/usan/awsext). The provider exposes AWS API operations missing from the
+official hashicorp/aws provider so USAN does not need to maintain a fork.
+
+Tech stack:
+- Go 1.24, module path github.com/USAN/terraform-provider-awsext
+- Terraform Plugin Framework v1.16.0
+- AWS SDK v2 (aws-sdk-go-v2); WorkSpaces package aws-sdk-go-v2/service/workspaces
+- Provider passes aws.Config as resp.ResourceData; resources receive via req.ProviderData.(aws.Config)
+
+Patterns every resource must follow:
+- var _ resource.Resource = &XxxResource{} interface assertion at top of file
+- var _ resource.ResourceWithImportState = &XxxResource{} if import is supported
+- Resource struct: type XxxResource struct { config aws.Config }
+- Configure method: assert req.ProviderData.(aws.Config), return early if nil, store in r.config
+- Create AWS client: workspaces.NewFromConfig(r.config)
+- Strongly-typed error handling: errors.As(err, &workspacestypes.ResourceNotFoundException{})
+- Remove from state on 404: resp.State.RemoveResource(ctx)
+- Log creation with: tflog.Trace(ctx, "created ...")
+- Register all new resources in provider.go Resources() method
+
+Shared helpers in workspaces_tags.go:
+- readResourceTags(ctx, conn, resourceId) -- calls DescribeTags, returns types.Map
+- updateResourceTags(ctx, conn, resourceId, oldTags, newTags) -- diffs and calls DeleteTags/CreateTags
+- tagsToList(ctx, tags) -- converts types.Map to []workspacestypes.Tag for Create inputs
+
+Resources to implement:
+1. awsext_workspaces_streaming_properties -- ModifyStreamingProperties (C/U), DescribeWorkspaceDirectories (R), no-op delete
+2. awsext_workspaces_image -- CreateWorkspaceImage/DescribeWorkspaceImages/DeleteWorkspaceImage; tags support
+3. awsext_workspaces_image_copy -- CopyWorkspaceImage/DescribeWorkspaceImages/DeleteWorkspaceImage; call Describe after Copy to populate owner_account_id; tags support
+4. awsext_workspaces_bundle -- full CRUD; image_id updatable in-place; tags support
+5. awsext_workspaces_pool_running -- StartWorkspacesPool/StopWorkspacesPool; run-state only; catches InvalidResourceStateException
+6. awsext_workspaces_image_permission -- UpdateWorkspaceImagePermission(AllowCopyImage=true/false); import by image_id/shared_account_id
+7. awsext_workspaces_pool -- full CRUD with CreateWorkspacesPool/UpdateWorkspacesPool/TerminateWorkspacesPool; nested application_settings and timeout_settings; tags support; import by pool_id
+
+Add attribution comment to the top of every generated file:
+// Generated by Claude (claude.ai) | Date: YYYY-MM-DD | Model: <model>
+// Re-generation prompt: see Workspaces.ai in project root
