@@ -157,10 +157,7 @@ func (r *QConnectAIPromptResource) Create(ctx context.Context, req resource.Crea
 
 	templateConfig := buildTemplateConfiguration(data.TemplateConfiguration.ValueString())
 
-	visibilityStatus := qconnecttypes.VisibilityStatusSaved
-	if !data.VisibilityStatus.IsNull() && !data.VisibilityStatus.IsUnknown() && data.VisibilityStatus.ValueString() != "" {
-		visibilityStatus = qconnecttypes.VisibilityStatus(data.VisibilityStatus.ValueString())
-	}
+	visibilityStatus := resolveVisibilityStatus(data.VisibilityStatus)
 
 	in := &qconnect.CreateAIPromptInput{
 		AssistantId:           aws.String(data.AssistantId.ValueString()),
@@ -280,10 +277,7 @@ func (r *QConnectAIPromptResource) Update(ctx context.Context, req resource.Upda
 
 	templateConfig := buildTemplateConfiguration(plan.TemplateConfiguration.ValueString())
 
-	visibilityStatus := qconnecttypes.VisibilityStatusSaved
-	if !plan.VisibilityStatus.IsNull() && !plan.VisibilityStatus.IsUnknown() && plan.VisibilityStatus.ValueString() != "" {
-		visibilityStatus = qconnecttypes.VisibilityStatus(plan.VisibilityStatus.ValueString())
-	}
+	visibilityStatus := resolveVisibilityStatus(plan.VisibilityStatus)
 
 	in := &qconnect.UpdateAIPromptInput{
 		AssistantId:           aws.String(state.AssistantId.ValueString()),

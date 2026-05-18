@@ -22,7 +22,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
 
@@ -424,10 +423,7 @@ func (r *QConnectAIGuardrailResource) Create(ctx context.Context, req resource.C
 
 	conn := qconnect.NewFromConfig(r.config)
 
-	visibilityStatus := qconnecttypes.VisibilityStatusSaved
-	if !data.VisibilityStatus.IsNull() && !data.VisibilityStatus.IsUnknown() && data.VisibilityStatus.ValueString() != "" {
-		visibilityStatus = qconnecttypes.VisibilityStatus(data.VisibilityStatus.ValueString())
-	}
+	visibilityStatus := resolveVisibilityStatus(data.VisibilityStatus)
 
 	in := &qconnect.CreateAIGuardrailInput{
 		AssistantId:             aws.String(data.AssistantId.ValueString()),
@@ -576,10 +572,7 @@ func (r *QConnectAIGuardrailResource) Update(ctx context.Context, req resource.U
 
 	conn := qconnect.NewFromConfig(r.config)
 
-	visibilityStatus := qconnecttypes.VisibilityStatusSaved
-	if !plan.VisibilityStatus.IsNull() && !plan.VisibilityStatus.IsUnknown() && plan.VisibilityStatus.ValueString() != "" {
-		visibilityStatus = qconnecttypes.VisibilityStatus(plan.VisibilityStatus.ValueString())
-	}
+	visibilityStatus := resolveVisibilityStatus(plan.VisibilityStatus)
 
 	in := &qconnect.UpdateAIGuardrailInput{
 		AssistantId:             aws.String(state.AssistantId.ValueString()),
@@ -959,16 +952,16 @@ func flattenTopicPolicyConfig(ctx context.Context, cfg *qconnecttypes.AIGuardrai
 	topicObjs := make([]attr.Value, 0, len(cfg.TopicsConfig))
 	for _, t := range cfg.TopicsConfig {
 		var examplesList types.List
-		if len(t.Examples) > 0 {
+		if len(t.Examples) == 0 {
+			examplesList = types.ListNull(types.StringType)
+		} else {
 			exVals := make([]attr.Value, 0, len(t.Examples))
 			for _, ex := range t.Examples {
 				exVals = append(exVals, types.StringValue(ex))
 			}
-			l, d := types.ListValue(types.StringType, exVals)
-			diags.Append(d...)
-			examplesList = l
-		} else {
-			examplesList = types.ListValueMust(types.StringType, []attr.Value{})
+			var dd diag.Diagnostics
+			examplesList, dd = types.ListValue(types.StringType, exVals)
+			diags.Append(dd...)
 		}
 
 		obj, d := types.ObjectValue(topicConfigAttrTypes, map[string]attr.Value{
@@ -998,28 +991,40 @@ func flattenWordPolicyConfig(ctx context.Context, cfg *qconnecttypes.AIGuardrail
 	}
 
 	// words_config
-	wordObjs := make([]attr.Value, 0, len(cfg.WordsConfig))
-	for _, w := range cfg.WordsConfig {
-		obj, d := types.ObjectValue(wordConfigAttrTypes, map[string]attr.Value{
-			"text": types.StringValue(aws.ToString(w.Text)),
-		})
-		diags.Append(d...)
-		wordObjs = append(wordObjs, obj)
+	var wordsList types.List
+	if len(cfg.WordsConfig) == 0 {
+		wordsList = types.ListNull(types.ObjectType{AttrTypes: wordConfigAttrTypes})
+	} else {
+		wordObjs := make([]attr.Value, 0, len(cfg.WordsConfig))
+		for _, w := range cfg.WordsConfig {
+			obj, d := types.ObjectValue(wordConfigAttrTypes, map[string]attr.Value{
+				"text": types.StringValue(aws.ToString(w.Text)),
+			})
+			diags.Append(d...)
+			wordObjs = append(wordObjs, obj)
+		}
+		var dd diag.Diagnostics
+		wordsList, dd = types.ListValue(types.ObjectType{AttrTypes: wordConfigAttrTypes}, wordObjs)
+		diags.Append(dd...)
 	}
-	wordsList, d := types.ListValue(types.ObjectType{AttrTypes: wordConfigAttrTypes}, wordObjs)
-	diags.Append(d...)
 
 	// managed_word_lists_config
-	managedObjs := make([]attr.Value, 0, len(cfg.ManagedWordListsConfig))
-	for _, m := range cfg.ManagedWordListsConfig {
-		obj, d := types.ObjectValue(managedWordsConfigAttrTypes, map[string]attr.Value{
-			"type": types.StringValue(string(m.Type)),
-		})
-		diags.Append(d...)
-		managedObjs = append(managedObjs, obj)
+	var managedList types.List
+	if len(cfg.ManagedWordListsConfig) == 0 {
+		managedList = types.ListNull(types.ObjectType{AttrTypes: managedWordsConfigAttrTypes})
+	} else {
+		managedObjs := make([]attr.Value, 0, len(cfg.ManagedWordListsConfig))
+		for _, m := range cfg.ManagedWordListsConfig {
+			obj, d := types.ObjectValue(managedWordsConfigAttrTypes, map[string]attr.Value{
+				"type": types.StringValue(string(m.Type)),
+			})
+			diags.Append(d...)
+			managedObjs = append(managedObjs, obj)
+		}
+		var dd diag.Diagnostics
+		managedList, dd = types.ListValue(types.ObjectType{AttrTypes: managedWordsConfigAttrTypes}, managedObjs)
+		diags.Append(dd...)
 	}
-	managedList, d := types.ListValue(types.ObjectType{AttrTypes: managedWordsConfigAttrTypes}, managedObjs)
-	diags.Append(d...)
 
 	result, d := types.ObjectValue(wordPolicyConfigAttrTypes, map[string]attr.Value{
 		"words_config":              wordsList,
@@ -1036,36 +1041,48 @@ func flattenSensitiveInformationPolicyConfig(ctx context.Context, cfg *qconnectt
 	}
 
 	// pii_entities_config
-	piiObjs := make([]attr.Value, 0, len(cfg.PiiEntitiesConfig))
-	for _, p := range cfg.PiiEntitiesConfig {
-		obj, d := types.ObjectValue(piiEntityConfigAttrTypes, map[string]attr.Value{
-			"type":   types.StringValue(string(p.Type)),
-			"action": types.StringValue(string(p.Action)),
-		})
-		diags.Append(d...)
-		piiObjs = append(piiObjs, obj)
+	var piiList types.List
+	if len(cfg.PiiEntitiesConfig) == 0 {
+		piiList = types.ListNull(types.ObjectType{AttrTypes: piiEntityConfigAttrTypes})
+	} else {
+		piiObjs := make([]attr.Value, 0, len(cfg.PiiEntitiesConfig))
+		for _, p := range cfg.PiiEntitiesConfig {
+			obj, d := types.ObjectValue(piiEntityConfigAttrTypes, map[string]attr.Value{
+				"type":   types.StringValue(string(p.Type)),
+				"action": types.StringValue(string(p.Action)),
+			})
+			diags.Append(d...)
+			piiObjs = append(piiObjs, obj)
+		}
+		var dd diag.Diagnostics
+		piiList, dd = types.ListValue(types.ObjectType{AttrTypes: piiEntityConfigAttrTypes}, piiObjs)
+		diags.Append(dd...)
 	}
-	piiList, d := types.ListValue(types.ObjectType{AttrTypes: piiEntityConfigAttrTypes}, piiObjs)
-	diags.Append(d...)
 
 	// regexes_config
-	regexObjs := make([]attr.Value, 0, len(cfg.RegexesConfig))
-	for _, rx := range cfg.RegexesConfig {
-		descVal := types.StringNull()
-		if rx.Description != nil {
-			descVal = types.StringValue(aws.ToString(rx.Description))
+	var regexList types.List
+	if len(cfg.RegexesConfig) == 0 {
+		regexList = types.ListNull(types.ObjectType{AttrTypes: regexConfigAttrTypes})
+	} else {
+		regexObjs := make([]attr.Value, 0, len(cfg.RegexesConfig))
+		for _, rx := range cfg.RegexesConfig {
+			descVal := types.StringNull()
+			if rx.Description != nil {
+				descVal = types.StringValue(aws.ToString(rx.Description))
+			}
+			obj, d := types.ObjectValue(regexConfigAttrTypes, map[string]attr.Value{
+				"name":        types.StringValue(aws.ToString(rx.Name)),
+				"pattern":     types.StringValue(aws.ToString(rx.Pattern)),
+				"action":      types.StringValue(string(rx.Action)),
+				"description": descVal,
+			})
+			diags.Append(d...)
+			regexObjs = append(regexObjs, obj)
 		}
-		obj, d := types.ObjectValue(regexConfigAttrTypes, map[string]attr.Value{
-			"name":        types.StringValue(aws.ToString(rx.Name)),
-			"pattern":     types.StringValue(aws.ToString(rx.Pattern)),
-			"action":      types.StringValue(string(rx.Action)),
-			"description": descVal,
-		})
-		diags.Append(d...)
-		regexObjs = append(regexObjs, obj)
+		var dd diag.Diagnostics
+		regexList, dd = types.ListValue(types.ObjectType{AttrTypes: regexConfigAttrTypes}, regexObjs)
+		diags.Append(dd...)
 	}
-	regexList, d := types.ListValue(types.ObjectType{AttrTypes: regexConfigAttrTypes}, regexObjs)
-	diags.Append(d...)
 
 	result, d := types.ObjectValue(sensitiveInformationPolicyConfigAttrTypes, map[string]attr.Value{
 		"pii_entities_config": piiList,
@@ -1099,11 +1116,4 @@ func flattenContextualGroundingPolicyConfig(ctx context.Context, cfg *qconnectty
 	})
 	diags.Append(d...)
 	return result, diags
-}
-
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-// objectAsOptions returns the options for types.Object.As calls.
-func objectAsOptions() basetypes.ObjectAsOptions {
-	return basetypes.ObjectAsOptions{}
 }
