@@ -49,14 +49,17 @@ func (r *QConnectAssistantResource) Schema(ctx context.Context, req resource.Sch
 		Attributes: map[string]schema.Attribute{
 			"assistant_id": schema.StringAttribute{
 				Computed:      true,
+				Description:   "Service-assigned UUID of the assistant.",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
 			"assistant_arn": schema.StringAttribute{
 				Computed:      true,
+				Description:   "ARN of the assistant.",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
 			"name": schema.StringAttribute{
 				Required:      true,
+				Description:   "Friendly name of the assistant.",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
 				Validators:    []validator.String{stringvalidator.LengthBetween(1, 255)},
 			},
@@ -68,11 +71,13 @@ func (r *QConnectAssistantResource) Schema(ctx context.Context, req resource.Sch
 			},
 			"description": schema.StringAttribute{
 				Optional:      true,
+				Description:   "Description of the assistant.",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
 			},
 			"tags": schema.MapAttribute{
 				Optional:    true,
 				Computed:    true,
+				Description: "Tags to assign to the assistant.",
 				ElementType: types.StringType,
 			},
 		},
@@ -87,7 +92,7 @@ func (r *QConnectAssistantResource) Configure(ctx context.Context, req resource.
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Resource Configure Type",
-			fmt.Sprintf("Expected aws.Config, got: %T. Please report this issue to the provider developers.", req.ProviderData),
+			fmt.Sprintf("Expected *aws.Config, got: %T. Please report this issue to the provider developers.", req.ProviderData),
 		)
 		return
 	}
@@ -110,7 +115,12 @@ func (r *QConnectAssistantResource) Create(ctx context.Context, req resource.Cre
 	if !data.Description.IsNull() && !data.Description.IsUnknown() {
 		in.Description = aws.String(data.Description.ValueString())
 	}
-	if tagMap, err := qconnectTagsFromMap(ctx, data.Tags); err == nil && tagMap != nil {
+	tagMap, err := qconnectTagsFromMap(ctx, data.Tags)
+	if err != nil {
+		resp.Diagnostics.AddError("Error reading tags", err.Error())
+		return
+	}
+	if tagMap != nil {
 		in.Tags = tagMap
 	}
 
