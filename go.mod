@@ -6,6 +6,7 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.41.7
 	github.com/aws/aws-sdk-go-v2/config v1.31.8
 	github.com/aws/aws-sdk-go-v2/credentials v1.18.12
+	github.com/aws/aws-sdk-go-v2/service/appintegrations v1.37.9
 	github.com/aws/aws-sdk-go-v2/service/connect v1.139.1
 	github.com/aws/aws-sdk-go-v2/service/qconnect v1.31.0
 	github.com/aws/aws-sdk-go-v2/service/sts v1.38.4
