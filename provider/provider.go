@@ -130,6 +130,7 @@ func (p *AwsExtProvider) Resources(ctx context.Context) []func() resource.Resour
 		NewAgentStatusResource,
 		NewQConnectAssistantResource,
 		NewQConnectAiPromptResource,
+		NewQConnectAIGuardrailResource,
 		NewWorkspacesStreamingPropertiesResource,
 		NewWorkspacesImageResource,
 		NewWorkspacesImageCopyResource,
