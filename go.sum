@@ -36,6 +36,8 @@ github.com/aws/aws-sdk-go-v2/service/appintegrations v1.37.9 h1:e51YjJHGLC86GPxL
 github.com/aws/aws-sdk-go-v2/service/appintegrations v1.37.9/go.mod h1:EhPRMWYqp8CDlJ/EEYNegsBOTTJRN6HbNaUCQ9J7JGw=
 github.com/aws/aws-sdk-go-v2/service/connect v1.139.1 h1:EcjVKcOcPh+ZBHOVVa+fqvBSPlppFSaGWL+WPHFDzYc=
 github.com/aws/aws-sdk-go-v2/service/connect v1.139.1/go.mod h1:ybFXrfh8spGBlbgd8q/MVqzt2RvdSMhWO6EiD4UkHRg=
+github.com/aws/aws-sdk-go-v2/service/connect v1.174.0 h1:owL4XrG0fVijIAo17rjfYz0SH23EVl295gzKWRa/dGo=
+github.com/aws/aws-sdk-go-v2/service/connect v1.174.0/go.mod h1:Du5pBjluSAHkGpEiz8aCfk9NdndzEeGpCqARDWAlGGQ=
 github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.1 h1:oegbebPEMA/1Jny7kvwejowCaHz1FWZAQ94WXFNCyTM=
 github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.1/go.mod h1:kemo5Myr9ac0U9JfSjMo9yHLtw+pECEHsFtJ9tqCEI8=
 github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.7 h1:mLgc5QIgOy26qyh5bvW+nDoAppxgn3J2WV3m9ewq7+8=

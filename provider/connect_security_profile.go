@@ -54,6 +54,7 @@ type ConnectSecurityProfileResourceModel struct {
 // applicationAttrTypes is the element type for the applications list.
 var applicationAttrTypes = map[string]attr.Type{
 	"namespace":               types.StringType,
+	"type":                    types.StringType,
 	"application_permissions": types.ListType{ElemType: types.StringType},
 }
 
@@ -107,6 +108,10 @@ func (r *ConnectSecurityProfileResource) Schema(ctx context.Context, req resourc
 						"namespace": schema.StringAttribute{
 							Required:    true,
 							Description: "The namespace of the third-party application.",
+						},
+						"type": schema.StringAttribute{
+							Optional:    true,
+							Description: "Type of application. Use `MCP` for AgentCore MCP servers so the listed application_permissions are validated as MCP tool identifiers rather than third-party ACCESS permissions. Defaults to AWS server-side default (`THIRD_PARTY_APPLICATION`) when omitted.",
 						},
 						"application_permissions": schema.ListAttribute{
 							Required:    true,
@@ -182,6 +187,24 @@ func (r *ConnectSecurityProfileResource) Create(ctx context.Context, req resourc
 
 	conn := connect.NewFromConfig(r.config)
 
+	var perms []string
+	if !data.Permissions.IsNull() && !data.Permissions.IsUnknown() {
+		resp.Diagnostics.Append(data.Permissions.ElementsAs(ctx, &perms, false)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+
+	var apps []conntypes.Application
+	if !data.Applications.IsNull() && !data.Applications.IsUnknown() {
+		var err error
+		apps, err = expandApplications(ctx, data.Applications)
+		if err != nil {
+			resp.Diagnostics.AddError("Error expanding applications", err.Error())
+			return
+		}
+	}
+
 	in := &connect.CreateSecurityProfileInput{
 		InstanceId:          aws.String(data.InstanceID.ValueString()),
 		SecurityProfileName: aws.String(data.Name.ValueString()),
@@ -191,23 +214,8 @@ func (r *ConnectSecurityProfileResource) Create(ctx context.Context, req resourc
 		in.Description = aws.String(data.Description.ValueString())
 	}
 
-	if !data.Permissions.IsNull() && !data.Permissions.IsUnknown() {
-		var perms []string
-		resp.Diagnostics.Append(data.Permissions.ElementsAs(ctx, &perms, false)...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-		in.Permissions = perms
-	}
-
-	if !data.Applications.IsNull() && !data.Applications.IsUnknown() {
-		apps, err := expandApplications(ctx, data.Applications)
-		if err != nil {
-			resp.Diagnostics.AddError("Error expanding applications", err.Error())
-			return
-		}
-		in.Applications = apps
-	}
+	in.Permissions = perms
+	in.Applications = apps
 
 	if !data.AllowedAccessControlTags.IsNull() && !data.AllowedAccessControlTags.IsUnknown() {
 		var tagMap map[string]string
@@ -433,13 +441,14 @@ func (r *ConnectSecurityProfileResource) Update(ctx context.Context, req resourc
 			return
 		}
 	}
-	in.Permissions = perms // empty slice clears them
 
 	apps, err := expandApplications(ctx, plan.Applications)
 	if err != nil {
 		resp.Diagnostics.AddError("Error expanding applications", err.Error())
 		return
 	}
+
+	in.Permissions = perms // empty slice clears them
 	in.Applications = apps // nil/empty slice clears them
 
 	var aacTags map[string]string
@@ -666,6 +675,7 @@ func expandApplications(ctx context.Context, list types.List) ([]conntypes.Appli
 
 	type appModel struct {
 		Namespace              types.String `tfsdk:"namespace"`
+		Type                   types.String `tfsdk:"type"`
 		ApplicationPermissions types.List   `tfsdk:"application_permissions"`
 	}
 
@@ -679,6 +689,9 @@ func expandApplications(ctx context.Context, list types.List) ([]conntypes.Appli
 	for _, m := range models {
 		app := conntypes.Application{
 			Namespace: aws.String(m.Namespace.ValueString()),
+		}
+		if !m.Type.IsNull() && !m.Type.IsUnknown() && m.Type.ValueString() != "" {
+			app.Type = conntypes.ApplicationType(m.Type.ValueString())
 		}
 		if !m.ApplicationPermissions.IsNull() && !m.ApplicationPermissions.IsUnknown() {
 			var perms []string
@@ -712,6 +725,11 @@ func flattenApplications(ctx context.Context, apps []conntypes.Application, pres
 			ns = types.StringValue(aws.ToString(app.Namespace))
 		}
 
+		appType := types.StringNull()
+		if app.Type != "" {
+			appType = types.StringValue(string(app.Type))
+		}
+
 		var permValues []attr.Value
 		for _, p := range app.ApplicationPermissions {
 			permValues = append(permValues, types.StringValue(p))
@@ -723,6 +741,7 @@ func flattenApplications(ctx context.Context, apps []conntypes.Application, pres
 
 		obj, diags := types.ObjectValue(applicationAttrTypes, map[string]attr.Value{
 			"namespace":               ns,
+			"type":                    appType,
 			"application_permissions": permsList,
 		})
 		if diags.HasError() {

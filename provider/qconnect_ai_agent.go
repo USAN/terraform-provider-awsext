@@ -12,6 +12,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/qconnect"
+	qconnectdoc "github.com/aws/aws-sdk-go-v2/service/qconnect/document"
 	qconnecttypes "github.com/aws/aws-sdk-go-v2/service/qconnect/types"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
@@ -184,12 +185,11 @@ func (r *QConnectAIAgentResource) Create(ctx context.Context, req resource.Creat
 	data.AiAgentArn = types.StringValue(aws.ToString(out.AiAgent.AiAgentArn))
 	data.VisibilityStatus = types.StringValue(string(out.AiAgent.VisibilityStatus))
 
-	cfgJSON, err := aiAgentConfigToJSON(out.AiAgent.Configuration)
-	if err != nil {
-		resp.Diagnostics.AddError("Error reading AI Agent configuration", err.Error())
-		return
-	}
-	data.Configuration = types.StringValue(cfgJSON)
+	// Keep the user-supplied configuration JSON in state. The QConnect API
+	// returns the configuration with reordered keys and AWS-injected default
+	// schemas for built-in tools (e.g. Retrieve), which would cause
+	// "Provider produced inconsistent result after apply" errors and
+	// permanent diffs. Trust the plan value as the source of truth.
 
 	if tags, err := readQConnectTags(ctx, conn, data.AiAgentArn.ValueString()); err == nil {
 		data.Tags = tags
@@ -238,12 +238,17 @@ func (r *QConnectAIAgentResource) Read(ctx context.Context, req resource.ReadReq
 		data.Description = types.StringNull()
 	}
 
-	cfgJSON, err := aiAgentConfigToJSON(out.AiAgent.Configuration)
-	if err != nil {
-		resp.Diagnostics.AddError("Error reading AI Agent configuration", err.Error())
-		return
+	// Configuration: preserve existing state value to avoid drift from
+	// API-side noise (key reordering, default schema injection). On import
+	// (no prior state), fall back to the API value so the resource is usable.
+	if data.Configuration.IsNull() || data.Configuration.IsUnknown() {
+		cfgJSON, err := aiAgentConfigToJSON(out.AiAgent.Configuration)
+		if err != nil {
+			resp.Diagnostics.AddError("Error reading AI Agent configuration", err.Error())
+			return
+		}
+		data.Configuration = types.StringValue(cfgJSON)
 	}
-	data.Configuration = types.StringValue(cfgJSON)
 
 	if tags, err := readQConnectTags(ctx, conn, data.AiAgentArn.ValueString()); err == nil {
 		data.Tags = tags
@@ -285,12 +290,7 @@ func (r *QConnectAIAgentResource) Update(ctx context.Context, req resource.Updat
 
 	plan.VisibilityStatus = types.StringValue(string(out.AiAgent.VisibilityStatus))
 
-	updatedCfgJSON, err := aiAgentConfigToJSON(out.AiAgent.Configuration)
-	if err != nil {
-		resp.Diagnostics.AddError("Error reading AI Agent configuration", err.Error())
-		return
-	}
-	plan.Configuration = types.StringValue(updatedCfgJSON)
+	// Keep plan.Configuration as-is — see Create() for rationale.
 
 	if err := updateQConnectTags(ctx, conn, state.AiAgentArn.ValueString(), state.Tags, plan.Tags); err != nil {
 		resp.Diagnostics.AddError("Error updating Q in Connect AI Agent tags", err.Error())
@@ -383,8 +383,8 @@ func aiAgentConfigFromJSON(agentType string, j string) (qconnecttypes.AIAgentCon
 		}
 		return &qconnecttypes.AIAgentConfigurationMemberNoteTakingAIAgentConfiguration{Value: v}, nil
 	case "ORCHESTRATION":
-		var v qconnecttypes.OrchestrationAIAgentConfiguration
-		if err := json.Unmarshal([]byte(j), &v); err != nil {
+		v, err := unmarshalOrchestrationConfig(j)
+		if err != nil {
 			return nil, fmt.Errorf("unmarshaling ORCHESTRATION configuration: %w", err)
 		}
 		return &qconnecttypes.AIAgentConfigurationMemberOrchestrationAIAgentConfiguration{Value: v}, nil
@@ -398,6 +398,244 @@ func aiAgentConfigFromJSON(agentType string, j string) (qconnecttypes.AIAgentCon
 		return nil, fmt.Errorf("unsupported AI Agent type: %s", agentType)
 	}
 }
+
+// ─── ORCHESTRATION config intermediate types ──────────────────────────────────
+//
+// The AWS SDK models ToolOverrideInputValueConfiguration as a Go interface
+// (union type). encoding/json cannot unmarshal JSON into an interface, so we
+// use these camelCase-tagged intermediate structs for both directions.
+
+type orchConfigJSON struct {
+	OrchestrationAIPromptId    string           `json:"orchestrationAIPromptId"`
+	OrchestrationAIGuardrailId string           `json:"orchestrationAIGuardrailId,omitempty"`
+	ConnectInstanceArn         string           `json:"connectInstanceArn,omitempty"`
+	Locale                     string           `json:"locale,omitempty"`
+	ToolConfigurations         []toolConfigJSON `json:"toolConfigurations"`
+}
+
+type toolConfigJSON struct {
+	ToolId                    string                      `json:"toolId,omitempty"`
+	ToolName                  string                      `json:"toolName"`
+	ToolType                  string                      `json:"toolType"`
+	Instruction               json.RawMessage             `json:"instruction"`
+	OverrideInputValues       json.RawMessage             `json:"overrideInputValues"`
+	InputSchema               json.RawMessage             `json:"inputSchema,omitempty"`
+	UserInteractionConfig     *userInteractionConfigJSON  `json:"userInteractionConfiguration,omitempty"`
+}
+
+type userInteractionConfigJSON struct {
+	IsUserConfirmationRequired bool `json:"isUserConfirmationRequired"`
+}
+
+type overrideInputJSON struct {
+	JsonPath string          `json:"jsonPath"`
+	Value    overrideValJSON `json:"value"`
+}
+
+type overrideValJSON struct {
+	Constant *constantInputJSON `json:"constant,omitempty"`
+}
+
+type constantInputJSON struct {
+	Type  string `json:"type"`
+	Value string `json:"value"`
+}
+
+// unmarshalOrchestrationConfig converts a configuration JSON string into an
+// OrchestrationAIAgentConfiguration SDK type. It handles the union field
+// ToolOverrideInputValueConfiguration via the intermediate overrideInputJSON type.
+func unmarshalOrchestrationConfig(j string) (qconnecttypes.OrchestrationAIAgentConfiguration, error) {
+	var raw orchConfigJSON
+	if err := json.Unmarshal([]byte(j), &raw); err != nil {
+		return qconnecttypes.OrchestrationAIAgentConfiguration{}, err
+	}
+
+	cfg := qconnecttypes.OrchestrationAIAgentConfiguration{
+		OrchestrationAIPromptId: aws.String(raw.OrchestrationAIPromptId),
+	}
+	if raw.OrchestrationAIGuardrailId != "" {
+		cfg.OrchestrationAIGuardrailId = aws.String(raw.OrchestrationAIGuardrailId)
+	}
+	if raw.ConnectInstanceArn != "" {
+		cfg.ConnectInstanceArn = aws.String(raw.ConnectInstanceArn)
+	}
+	if raw.Locale != "" {
+		cfg.Locale = aws.String(raw.Locale)
+	}
+
+	for _, t := range raw.ToolConfigurations {
+		tool := qconnecttypes.ToolConfiguration{
+			ToolName: aws.String(t.ToolName),
+			ToolType: qconnecttypes.ToolType(t.ToolType),
+		}
+		if t.ToolId != "" {
+			tool.ToolId = aws.String(t.ToolId)
+		}
+
+		instr, err := jsonToToolInstruction(t.Instruction)
+		if err != nil {
+			return qconnecttypes.OrchestrationAIAgentConfiguration{}, fmt.Errorf("parsing instruction for tool %s: %w", t.ToolName, err)
+		}
+		tool.Instruction = instr
+
+		if len(t.OverrideInputValues) > 0 && string(t.OverrideInputValues) != "null" && string(t.OverrideInputValues) != "[]" {
+			var overrides []overrideInputJSON
+			if err := json.Unmarshal(t.OverrideInputValues, &overrides); err != nil {
+				return qconnecttypes.OrchestrationAIAgentConfiguration{}, fmt.Errorf("parsing overrideInputValues for tool %s: %w", t.ToolName, err)
+			}
+			for _, ov := range overrides {
+				override := qconnecttypes.ToolOverrideInputValue{
+					JsonPath: aws.String(ov.JsonPath),
+				}
+				if ov.Value.Constant != nil {
+					override.Value = &qconnecttypes.ToolOverrideInputValueConfigurationMemberConstant{
+						Value: qconnecttypes.ToolOverrideConstantInputValue{
+							Type:  qconnecttypes.ToolOverrideInputValueType(ov.Value.Constant.Type),
+							Value: aws.String(ov.Value.Constant.Value),
+						},
+					}
+				}
+				tool.OverrideInputValues = append(tool.OverrideInputValues, override)
+			}
+		}
+
+		if len(t.InputSchema) > 0 && string(t.InputSchema) != "null" {
+			var v interface{}
+			if err := json.Unmarshal(t.InputSchema, &v); err != nil {
+				return qconnecttypes.OrchestrationAIAgentConfiguration{}, fmt.Errorf("parsing inputSchema for tool %s: %w", t.ToolName, err)
+			}
+			tool.InputSchema = qconnectdoc.NewLazyDocument(v)
+		}
+
+		if t.UserInteractionConfig != nil {
+			tool.UserInteractionConfiguration = &qconnecttypes.UserInteractionConfiguration{
+				IsUserConfirmationRequired: aws.Bool(t.UserInteractionConfig.IsUserConfirmationRequired),
+			}
+		}
+
+		cfg.ToolConfigurations = append(cfg.ToolConfigurations, tool)
+	}
+
+	return cfg, nil
+}
+
+// marshalOrchestrationConfig converts an OrchestrationAIAgentConfiguration SDK type
+// back to a JSON string that matches the camelCase format expected by the Terraform config.
+func marshalOrchestrationConfig(cfg qconnecttypes.OrchestrationAIAgentConfiguration) (string, error) {
+	raw := orchConfigJSON{
+		OrchestrationAIPromptId: aws.ToString(cfg.OrchestrationAIPromptId),
+	}
+	if cfg.OrchestrationAIGuardrailId != nil {
+		raw.OrchestrationAIGuardrailId = aws.ToString(cfg.OrchestrationAIGuardrailId)
+	}
+	if cfg.ConnectInstanceArn != nil {
+		raw.ConnectInstanceArn = aws.ToString(cfg.ConnectInstanceArn)
+	}
+	if cfg.Locale != nil {
+		raw.Locale = aws.ToString(cfg.Locale)
+	}
+
+	for _, t := range cfg.ToolConfigurations {
+		instrJSON, err := toolInstructionToJSON(t.Instruction)
+		if err != nil {
+			return "", fmt.Errorf("marshaling instruction for tool %s: %w", aws.ToString(t.ToolName), err)
+		}
+		ovJSON, err := toolOverrideInputValuesToJSON(t.OverrideInputValues)
+		if err != nil {
+			return "", fmt.Errorf("marshaling overrideInputValues for tool %s: %w", aws.ToString(t.ToolName), err)
+		}
+		tool := toolConfigJSON{
+			ToolName:            aws.ToString(t.ToolName),
+			ToolType:            string(t.ToolType),
+			Instruction:         instrJSON,
+			OverrideInputValues: ovJSON,
+		}
+		if t.ToolId != nil {
+			tool.ToolId = aws.ToString(t.ToolId)
+		}
+		if t.InputSchema != nil {
+			var v interface{}
+			if err := t.InputSchema.UnmarshalSmithyDocument(&v); err == nil {
+				if b, err := json.Marshal(v); err == nil {
+					tool.InputSchema = json.RawMessage(b)
+				}
+			}
+		}
+		if t.UserInteractionConfiguration != nil {
+			tool.UserInteractionConfig = &userInteractionConfigJSON{
+				IsUserConfirmationRequired: aws.ToBool(t.UserInteractionConfiguration.IsUserConfirmationRequired),
+			}
+		}
+		raw.ToolConfigurations = append(raw.ToolConfigurations, tool)
+	}
+
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func jsonToToolInstruction(raw json.RawMessage) (*qconnecttypes.ToolInstruction, error) {
+	s := string(raw)
+	if len(raw) == 0 || s == "null" {
+		return nil, nil
+	}
+	if s == "{}" {
+		return &qconnecttypes.ToolInstruction{}, nil
+	}
+	type instrIn struct {
+		Examples    []string `json:"examples"`
+		Instruction *string  `json:"instruction"`
+	}
+	var v instrIn
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return nil, err
+	}
+	return &qconnecttypes.ToolInstruction{
+		Examples:    v.Examples,
+		Instruction: v.Instruction,
+	}, nil
+}
+
+func toolInstructionToJSON(instr *qconnecttypes.ToolInstruction) (json.RawMessage, error) {
+	if instr == nil {
+		return json.RawMessage("null"), nil
+	}
+	if instr.Instruction == nil && len(instr.Examples) == 0 {
+		return json.RawMessage("{}"), nil
+	}
+	type instrOut struct {
+		Examples    []string `json:"examples"`
+		Instruction *string  `json:"instruction,omitempty"`
+	}
+	b, err := json.Marshal(instrOut{Examples: instr.Examples, Instruction: instr.Instruction})
+	return json.RawMessage(b), err
+}
+
+func toolOverrideInputValuesToJSON(overrides []qconnecttypes.ToolOverrideInputValue) (json.RawMessage, error) {
+	if overrides == nil {
+		return json.RawMessage("null"), nil
+	}
+	out := make([]overrideInputJSON, 0, len(overrides))
+	for _, ov := range overrides {
+		oj := overrideInputJSON{JsonPath: aws.ToString(ov.JsonPath)}
+		switch v := ov.Value.(type) {
+		case *qconnecttypes.ToolOverrideInputValueConfigurationMemberConstant:
+			oj.Value = overrideValJSON{
+				Constant: &constantInputJSON{
+					Type:  string(v.Value.Type),
+					Value: aws.ToString(v.Value.Value),
+				},
+			}
+		}
+		out = append(out, oj)
+	}
+	b, err := json.Marshal(out)
+	return json.RawMessage(b), err
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 // aiAgentConfigToJSON serializes the SDK AIAgentConfiguration union back to a JSON string.
 func aiAgentConfigToJSON(cfg qconnecttypes.AIAgentConfiguration) (string, error) {
@@ -421,7 +659,7 @@ func aiAgentConfigToJSON(cfg qconnecttypes.AIAgentConfiguration) (string, error)
 	case *qconnecttypes.AIAgentConfigurationMemberNoteTakingAIAgentConfiguration:
 		v = c.Value
 	case *qconnecttypes.AIAgentConfigurationMemberOrchestrationAIAgentConfiguration:
-		v = c.Value
+		return marshalOrchestrationConfig(c.Value)
 	case *qconnecttypes.AIAgentConfigurationMemberCaseSummarizationAIAgentConfiguration:
 		v = c.Value
 	default:

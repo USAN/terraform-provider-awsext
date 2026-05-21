@@ -56,10 +56,16 @@ func updateQConnectTags(ctx context.Context, conn *qconnect.Client, resourceArn 
 		}
 	}
 
-	if len(newTagMap) > 0 {
+	tagsToAdd := make(map[string]string)
+	for k, v := range newTagMap {
+		if oldV, exists := oldTagMap[k]; !exists || oldV != v {
+			tagsToAdd[k] = v
+		}
+	}
+	if len(tagsToAdd) > 0 {
 		if _, err := conn.TagResource(ctx, &qconnect.TagResourceInput{
 			ResourceArn: aws.String(resourceArn),
-			Tags:        newTagMap,
+			Tags:        tagsToAdd,
 		}); err != nil {
 			return err
 		}

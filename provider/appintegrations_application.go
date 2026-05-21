@@ -568,13 +568,8 @@ func (r *AppIntegrationsApplicationResource) Update(ctx context.Context, req res
 		in.InitializationTimeout = &v
 	}
 
-	// Always send iframe_config so that removing it from HCL clears the field.
-	// An empty IframeConfig (zero-value slices) signals the API to clear it.
-	ifc := &appintegrationstypes.IframeConfig{
-		Allow:   []string{},
-		Sandbox: []string{},
-	}
 	if plan.IframeConfig != nil {
+		ifc := &appintegrationstypes.IframeConfig{}
 		if !plan.IframeConfig.Allow.IsNull() && !plan.IframeConfig.Allow.IsUnknown() {
 			var allow []string
 			plan.IframeConfig.Allow.ElementsAs(ctx, &allow, false)
@@ -585,8 +580,8 @@ func (r *AppIntegrationsApplicationResource) Update(ctx context.Context, req res
 			plan.IframeConfig.Sandbox.ElementsAs(ctx, &sandbox, false)
 			ifc.Sandbox = sandbox
 		}
+		in.IframeConfig = ifc
 	}
-	in.IframeConfig = ifc
 
 	_, err := conn.UpdateApplication(ctx, in)
 	if err != nil {

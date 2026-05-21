@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__awslabs-aws-docs__read_documentation",
+      "mcp__awslabs-aws-docs__search_documentation"
+    ]
+  }
+}

@@ -35,11 +35,12 @@ func NewQConnectAIGuardrailVersionResource() resource.Resource {
 type QConnectAIGuardrailVersionResource struct{ config aws.Config }
 
 type QConnectAIGuardrailVersionResourceModel struct {
-	AssistantId            types.String `tfsdk:"assistant_id"`
-	AiGuardrailId          types.String `tfsdk:"ai_guardrail_id"`
-	ModifiedTimeSeconds    types.Int64  `tfsdk:"modified_time_seconds"`
-	VersionNumber          types.Int64  `tfsdk:"version_number"`
-	GuardrailArnWithVersion types.String `tfsdk:"guardrail_arn_with_version"`
+	AssistantId              types.String `tfsdk:"assistant_id"`
+	AiGuardrailId            types.String `tfsdk:"ai_guardrail_id"`
+	ModifiedTimeSeconds      types.Int64  `tfsdk:"modified_time_seconds"`
+	VersionNumber            types.Int64  `tfsdk:"version_number"`
+	GuardrailArnWithVersion  types.String `tfsdk:"guardrail_arn_with_version"`
+	AiGuardrailIdWithVersion types.String `tfsdk:"ai_guardrail_id_with_version"`
 }
 
 // ── Metadata ─────────────────────────────────────────────────────────────────
@@ -76,7 +77,12 @@ func (r *QConnectAIGuardrailVersionResource) Schema(ctx context.Context, req res
 			},
 			"guardrail_arn_with_version": schema.StringAttribute{
 				Computed:      true,
-				Description:   "ARN of the AI Guardrail qualified with the version number (<ai_guardrail_arn>:<version_number>). Use this in AI agent configurations that require a specific guardrail version.",
+				Description:   "Full ARN of the AI Guardrail qualified with the version number (<ai_guardrail_arn>:<version_number>).",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+			},
+			"ai_guardrail_id_with_version": schema.StringAttribute{
+				Computed:      true,
+				Description:   "AI Guardrail ID qualified with the version number (<ai_guardrail_id>:<version_number>). Use this for orchestrationAIGuardrailId in ORCHESTRATION AI agent configurations.",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
 		},
@@ -136,6 +142,7 @@ func (r *QConnectAIGuardrailVersionResource) Create(ctx context.Context, req res
 		guardrailArn = aws.ToString(out.AiGuardrail.AiGuardrailArn)
 	}
 	data.GuardrailArnWithVersion = types.StringValue(fmt.Sprintf("%s:%d", guardrailArn, versionNumber))
+	data.AiGuardrailIdWithVersion = types.StringValue(fmt.Sprintf("%s:%d", data.AiGuardrailId.ValueString(), versionNumber))
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -180,6 +187,9 @@ func (r *QConnectAIGuardrailVersionResource) Read(ctx context.Context, req resou
 	data.VersionNumber = types.Int64Value(versionNumber)
 	data.GuardrailArnWithVersion = types.StringValue(
 		fmt.Sprintf("%s:%d", aws.ToString(out.AiGuardrail.AiGuardrailArn), versionNumber),
+	)
+	data.AiGuardrailIdWithVersion = types.StringValue(
+		fmt.Sprintf("%s:%d", data.AiGuardrailId.ValueString(), versionNumber),
 	)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
