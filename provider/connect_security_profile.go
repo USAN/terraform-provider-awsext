@@ -14,6 +14,7 @@ import (
 	conntypes "github.com/aws/aws-sdk-go-v2/service/connect/types"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -333,18 +334,12 @@ func (r *ConnectSecurityProfileResource) Read(ctx context.Context, req resource.
 		}
 	}
 
-	if len(allPerms) == 0 && data.Permissions.IsNull() {
-		// preserve null — user did not set permissions
-	} else if len(allPerms) > 0 {
-		perms, diags := types.ListValueFrom(ctx, types.StringType, allPerms)
-		resp.Diagnostics.Append(diags...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-		data.Permissions = perms
-	} else {
-		data.Permissions = types.ListValueMust(types.StringType, []attr.Value{})
+	perms, listDiags := preserveOrSetStringList(ctx, allPerms, data.Permissions)
+	resp.Diagnostics.Append(listDiags...)
+	if resp.Diagnostics.HasError() {
+		return
 	}
+	data.Permissions = perms
 
 	if len(sp.AllowedAccessControlTags) == 0 && data.AllowedAccessControlTags.IsNull() {
 		// preserve null
@@ -359,18 +354,12 @@ func (r *ConnectSecurityProfileResource) Read(ctx context.Context, req resource.
 		data.AllowedAccessControlTags = types.MapValueMust(types.StringType, map[string]attr.Value{})
 	}
 
-	if len(sp.TagRestrictedResources) == 0 && data.TagRestrictedResources.IsNull() {
-		// preserve null
-	} else if len(sp.TagRestrictedResources) > 0 {
-		trr, diags := types.ListValueFrom(ctx, types.StringType, sp.TagRestrictedResources)
-		resp.Diagnostics.Append(diags...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-		data.TagRestrictedResources = trr
-	} else {
-		data.TagRestrictedResources = types.ListValueMust(types.StringType, []attr.Value{})
+	trr, trrDiags := preserveOrSetStringList(ctx, sp.TagRestrictedResources, data.TagRestrictedResources)
+	resp.Diagnostics.Append(trrDiags...)
+	if resp.Diagnostics.HasError() {
+		return
 	}
+	data.TagRestrictedResources = trr
 
 	// Paginate through ListSecurityProfileApplications
 	var allApps []conntypes.Application
@@ -665,6 +654,20 @@ func (r *ConnectSecurityProfileResource) readInto(ctx context.Context, conn *con
 	data.Tags = tags
 
 	return nil
+}
+
+// preserveOrSetStringList implements the null-preservation pattern used in Read:
+// - If items is empty AND current is null → return null (user never set this field)
+// - If items is empty AND current is non-null → return an empty (non-null) list
+// - If items is non-empty → return a populated list
+func preserveOrSetStringList(ctx context.Context, items []string, current types.List) (types.List, diag.Diagnostics) {
+	if len(items) == 0 {
+		if current.IsNull() {
+			return types.ListNull(types.StringType), nil
+		}
+		return types.ListValueMust(types.StringType, []attr.Value{}), nil
+	}
+	return types.ListValueFrom(ctx, types.StringType, items)
 }
 
 // expandApplications converts a types.List of application objects into []conntypes.Application.
