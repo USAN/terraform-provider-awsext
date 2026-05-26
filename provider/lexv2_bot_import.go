@@ -58,6 +58,7 @@ type LexV2BotImportResourceModel struct {
 	ImportOnExists              types.Bool   `tfsdk:"import_on_exists"`
 	ImportStatus                types.String `tfsdk:"import_status"`
 	ImportID                    types.String `tfsdk:"import_id"`
+	Tags                        types.Map    `tfsdk:"tags"`
 }
 
 // -------------------------------------------------------------------
@@ -149,6 +150,12 @@ func (r *LexV2BotImportResource) Schema(ctx context.Context, req resource.Schema
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
+			"tags": schema.MapAttribute{
+				Optional:    true,
+				Computed:    true,
+				ElementType: types.StringType,
+				Description: "Tags to assign to the Lex V2 bot. Updatable in place.",
+			},
 		},
 	}
 }
@@ -225,6 +232,18 @@ func (r *LexV2BotImportResource) Create(ctx context.Context, req resource.Create
 				data.BotArn = types.StringValue(botArn)
 				data.ImportStatus = types.StringValue("Adopted")
 				data.ImportID = types.StringValue("")
+				if !data.Tags.IsNull() && !data.Tags.IsUnknown() {
+					if err := applyLexV2Tags(ctx, lexClient, botArn, data.Tags); err != nil {
+						resp.Diagnostics.AddError("Error tagging LexV2 bot", err.Error())
+						return
+					}
+				}
+				tags, tagsErr := readLexV2Tags(ctx, lexClient, botArn)
+				if tagsErr != nil {
+					resp.Diagnostics.AddError("Error reading LexV2 bot tags", tagsErr.Error())
+					return
+				}
+				data.Tags = tags
 				resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 				return
 			}
@@ -321,6 +340,19 @@ func (r *LexV2BotImportResource) Create(ctx context.Context, req resource.Create
 	}
 	data.BotArn = types.StringValue(botArn)
 
+	if !data.Tags.IsNull() && !data.Tags.IsUnknown() {
+		if err := applyLexV2Tags(ctx, lexClient, botArn, data.Tags); err != nil {
+			resp.Diagnostics.AddError("Error tagging LexV2 bot", err.Error())
+			return
+		}
+	}
+	tags, tagsErr := readLexV2Tags(ctx, lexClient, botArn)
+	if tagsErr != nil {
+		resp.Diagnostics.AddError("Error reading LexV2 bot tags", tagsErr.Error())
+		return
+	}
+	data.Tags = tags
+
 	tflog.Trace(ctx, "lexv2 bot import completed", map[string]any{"bot_id": botID, "import_id": importID})
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -368,17 +400,50 @@ func (r *LexV2BotImportResource) Read(ctx context.Context, req resource.ReadRequ
 		}
 	}
 
+	if data.BotArn.ValueString() != "" {
+		tags, tagsErr := readLexV2Tags(ctx, lexClient, data.BotArn.ValueString())
+		if tagsErr != nil {
+			resp.Diagnostics.AddError("Error reading LexV2 bot tags", tagsErr.Error())
+			return
+		}
+		data.Tags = tags
+	}
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
 // -------------------------------------------------------------------
-// Update (no in-place updates; all attributes are ForceNew)
+// Update (tags only)
 // -------------------------------------------------------------------
 
 func (r *LexV2BotImportResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	// All mutable attributes either force replacement or are WriteOnly/Computed.
-	// This method should never be called in normal operation.
-	resp.Diagnostics.AddError("Update not supported", "awsext_lexv2_bot_import does not support in-place updates; all attributes force replacement.")
+	var plan, state LexV2BotImportResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	lexClient := lexmodelsv2.NewFromConfig(r.config)
+
+	if err := updateLexV2Tags(ctx, lexClient, state.BotArn.ValueString(), state.Tags, plan.Tags); err != nil {
+		resp.Diagnostics.AddError("Error updating LexV2 bot tags", err.Error())
+		return
+	}
+
+	plan.BotID = state.BotID
+	plan.BotArn = state.BotArn
+	plan.ImportStatus = state.ImportStatus
+	plan.ImportID = state.ImportID
+
+	tags, tagsErr := readLexV2Tags(ctx, lexClient, state.BotArn.ValueString())
+	if tagsErr != nil {
+		resp.Diagnostics.AddError("Error reading LexV2 bot tags", tagsErr.Error())
+		return
+	}
+	plan.Tags = tags
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
 // -------------------------------------------------------------------
