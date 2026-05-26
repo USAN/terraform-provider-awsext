@@ -546,10 +546,14 @@ func retryUpdateGatewayUntilReady(
 	in *bedrockagentcorecontrol.UpdateGatewayInput,
 ) (*bedrockagentcorecontrol.UpdateGatewayOutput, error) {
 	const (
-		maxWait     = 3 * time.Minute
-		initialWait = 2 * time.Second
-		maxBackoff  = 15 * time.Second
+		maxWait         = 3 * time.Minute
+		initialWait     = 2 * time.Second
+		maxBackoff      = 15 * time.Second
+		creatingStateMsg = "creating state"
 	)
+	// Pins the matched substring so that if AWS ever changes the message text,
+	// it returns an immediate error rather than silently timing out.
+
 	deadline := time.Now().Add(maxWait)
 	wait := initialWait
 	for {
@@ -557,19 +561,22 @@ func retryUpdateGatewayUntilReady(
 		if err == nil {
 			return out, nil
 		}
-		var ve *bactypes.ValidationException
-		if !errors.As(err, &ve) {
-			return nil, err
+		// Retry on ConflictException (gateway still provisioning) or on a
+		// ValidationException whose message indicates the gateway is in CREATING state.
+		if !errors.As(err, new(*bactypes.ConflictException)) {
+			var ve *bactypes.ValidationException
+			if !errors.As(err, &ve) {
+				return nil, err
+			}
+			msg := ""
+			if ve.Message != nil {
+				msg = *ve.Message
+			}
+			if !strings.Contains(strings.ToLower(msg), creatingStateMsg) {
+				return nil, err
+			}
 		}
-		msg := ""
-		if ve.Message != nil {
-			msg = *ve.Message
-		}
-		// Retry only the "still creating" case. Any other validation error is
-		// a real misconfiguration and should fail immediately.
-		if !strings.Contains(strings.ToLower(msg), "creating state") {
-			return nil, err
-		}
+		// ConflictException: gateway still being created — falls through to retry
 		if time.Now().Add(wait).After(deadline) {
 			return nil, fmt.Errorf("gateway did not leave CREATING state within %s: %w", maxWait, err)
 		}
