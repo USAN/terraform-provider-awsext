@@ -283,7 +283,7 @@ func (r *LexV2BotImportResource) Create(ctx context.Context, req resource.Create
 		return
 	}
 	putReq.Header.Set("Content-Type", "application/zip")
-	httpClient := &http.Client{Timeout: 5 * time.Minute}
+	httpClient := &http.Client{Timeout: 15 * time.Minute}
 	putResp, err := httpClient.Do(putReq)
 	if err != nil {
 		resp.Diagnostics.AddError("Error uploading zip to S3", err.Error())
