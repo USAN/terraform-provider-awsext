@@ -523,7 +523,7 @@ func unmarshalOrchestrationConfig(j string) (qconnecttypes.OrchestrationAIAgentC
 		}
 		tool.Instruction = instr
 
-		if len(t.OverrideInputValues) > 0 && string(t.OverrideInputValues) != "null" && string(t.OverrideInputValues) != "[]" {
+		if isNonEmptyJSONArray(t.OverrideInputValues) {
 			var overrides []overrideInputJSON
 			if err := json.Unmarshal(t.OverrideInputValues, &overrides); err != nil {
 				return qconnecttypes.OrchestrationAIAgentConfiguration{}, fmt.Errorf("parsing overrideInputValues for tool %s: %w", t.ToolName, err)
@@ -544,7 +544,7 @@ func unmarshalOrchestrationConfig(j string) (qconnecttypes.OrchestrationAIAgentC
 			}
 		}
 
-		if len(t.InputSchema) > 0 && string(t.InputSchema) != "null" {
+		if isNonNullJSON(t.InputSchema) {
 			var v interface{}
 			if err := json.Unmarshal(t.InputSchema, &v); err != nil {
 				return qconnecttypes.OrchestrationAIAgentConfiguration{}, fmt.Errorf("parsing inputSchema for tool %s: %w", t.ToolName, err)
@@ -715,4 +715,31 @@ func aiAgentConfigToJSON(cfg qconnecttypes.AIAgentConfiguration) (string, error)
 		return "", fmt.Errorf("marshaling AI Agent configuration: %w", err)
 	}
 	return string(b), nil
+}
+
+// isNonEmptyJSONArray returns true if b is a non-null, non-empty JSON array.
+// Uses proper unmarshal so whitespace variants like "[ ]" are handled correctly.
+// Malformed JSON is treated as empty.
+func isNonEmptyJSONArray(b []byte) bool {
+	if len(b) == 0 {
+		return false
+	}
+	var v []interface{}
+	if err := json.Unmarshal(b, &v); err != nil {
+		return false
+	}
+	return len(v) > 0
+}
+
+// isNonNullJSON returns true if b is non-empty and does not unmarshal to JSON null.
+// Malformed JSON is treated as null.
+func isNonNullJSON(b []byte) bool {
+	if len(b) == 0 {
+		return false
+	}
+	var v interface{}
+	if err := json.Unmarshal(b, &v); err != nil {
+		return false
+	}
+	return v != nil
 }
