@@ -312,10 +312,55 @@ func (r *QConnectAIAgentResource) Delete(ctx context.Context, req resource.Delet
 	}
 
 	conn := qconnect.NewFromConfig(r.config)
+	assistantId := data.AssistantId.ValueString()
+	aiAgentId := data.AiAgentId.ValueString()
+
+	// QConnect AI Agent published versions (e.g. ":1") are immutable and persist
+	// independently of the base agent. DeleteAIAgent does NOT cascade to them,
+	// and they remain associated with any Connect Security Profile that
+	// references the agent — blocking deletion of that security profile.
+	// Enumerate and delete every CUSTOMER version first.
+	paginator := qconnect.NewListAIAgentVersionsPaginator(conn, &qconnect.ListAIAgentVersionsInput{
+		AssistantId: aws.String(assistantId),
+		AiAgentId:   aws.String(aiAgentId),
+		Origin:      qconnecttypes.OriginCustomer,
+	})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			var nf *qconnecttypes.ResourceNotFoundException
+			if errors.As(err, &nf) {
+				return
+			}
+			resp.Diagnostics.AddError("Error listing Q in Connect AI Agent versions", err.Error())
+			return
+		}
+		for _, v := range page.AiAgentVersionSummaries {
+			if v.VersionNumber == nil {
+				continue
+			}
+			_, err := conn.DeleteAIAgentVersion(ctx, &qconnect.DeleteAIAgentVersionInput{
+				AssistantId:   aws.String(assistantId),
+				AiAgentId:     aws.String(aiAgentId),
+				VersionNumber: v.VersionNumber,
+			})
+			if err != nil {
+				var nf *qconnecttypes.ResourceNotFoundException
+				if errors.As(err, &nf) {
+					continue
+				}
+				resp.Diagnostics.AddError(
+					"Error deleting Q in Connect AI Agent version",
+					fmt.Sprintf("agent %s version %d: %s", aiAgentId, aws.ToInt64(v.VersionNumber), err.Error()),
+				)
+				return
+			}
+		}
+	}
 
 	_, err := conn.DeleteAIAgent(ctx, &qconnect.DeleteAIAgentInput{
-		AssistantId: aws.String(data.AssistantId.ValueString()),
-		AiAgentId:   aws.String(data.AiAgentId.ValueString()),
+		AssistantId: aws.String(assistantId),
+		AiAgentId:   aws.String(aiAgentId),
 	})
 	if err != nil {
 		var nf *qconnecttypes.ResourceNotFoundException

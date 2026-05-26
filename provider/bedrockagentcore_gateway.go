@@ -264,20 +264,52 @@ func (r *BedrockAgentCoreGatewayResource) Create(ctx context.Context, req resour
 	}
 
 	out, err := conn.CreateGateway(ctx, in)
-	if err != nil {
-		resp.Diagnostics.AddError("Error creating AgentCore Gateway", err.Error())
-		return
-	}
 
-	gatewayId := aws.ToString(out.GatewayId)
-	gatewayArn := aws.ToString(out.GatewayArn)
+	var gatewayId, gatewayArn, gatewayUrl string
+	var gatewayStatus string
+
+	if err != nil {
+		var ce *bactypes.ConflictException
+		if !errors.As(err, &ce) {
+			resp.Diagnostics.AddError("Error creating AgentCore Gateway", err.Error())
+			return
+		}
+		// Gateway already exists — look it up by name and adopt it.
+		existingId, lookupErr := findGatewayIdByName(ctx, conn, data.Name.ValueString())
+		if lookupErr != nil {
+			resp.Diagnostics.AddError(
+				"Error adopting existing AgentCore Gateway",
+				fmt.Sprintf("A gateway named %q already exists but could not be located: %s", data.Name.ValueString(), lookupErr),
+			)
+			return
+		}
+		getOut, getErr := conn.GetGateway(ctx, &bedrockagentcorecontrol.GetGatewayInput{
+			GatewayIdentifier: aws.String(existingId),
+		})
+		if getErr != nil {
+			resp.Diagnostics.AddError(
+				"Error reading existing AgentCore Gateway",
+				fmt.Sprintf("Located gateway %s by name but could not read it: %s", existingId, getErr),
+			)
+			return
+		}
+		gatewayId = aws.ToString(getOut.GatewayId)
+		gatewayArn = aws.ToString(getOut.GatewayArn)
+		gatewayUrl = aws.ToString(getOut.GatewayUrl)
+		gatewayStatus = string(getOut.Status)
+	} else {
+		gatewayId = aws.ToString(out.GatewayId)
+		gatewayArn = aws.ToString(out.GatewayArn)
+		gatewayUrl = aws.ToString(out.GatewayUrl)
+		gatewayStatus = string(out.Status)
+	}
 
 	// Save partial state immediately. The gateway exists in AWS now; if anything
 	// below fails, terraform must still track it so the next apply can either
 	// finish the audience patch via Update or destroy the gateway via Delete.
 	// Without this, a failed UpdateGateway leaves an orphan that blocks the
 	// next CreateGateway with a name ConflictException.
-	r.flushOutputToState(ctx, &data, gatewayId, gatewayArn, aws.ToString(out.GatewayUrl), string(out.Status), discoveryUrl, []string{bootstrapAudience})
+	r.flushOutputToState(ctx, &data, gatewayId, gatewayArn, gatewayUrl, gatewayStatus, discoveryUrl, []string{bootstrapAudience})
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -584,4 +616,28 @@ func (r *BedrockAgentCoreGatewayResource) flushOutputToState(
 	} else {
 		data.AllowedAudience = types.ListNull(types.StringType)
 	}
+}
+
+// findGatewayIdByName pages through ListGateways until it finds a gateway
+// whose name matches, then returns its gateway_id.
+func findGatewayIdByName(ctx context.Context, conn *bedrockagentcorecontrol.Client, name string) (string, error) {
+	var nextToken *string
+	for {
+		out, err := conn.ListGateways(ctx, &bedrockagentcorecontrol.ListGatewaysInput{
+			NextToken: nextToken,
+		})
+		if err != nil {
+			return "", err
+		}
+		for _, gw := range out.Items {
+			if aws.ToString(gw.Name) == name {
+				return aws.ToString(gw.GatewayId), nil
+			}
+		}
+		if out.NextToken == nil {
+			break
+		}
+		nextToken = out.NextToken
+	}
+	return "", fmt.Errorf("no gateway with name %q found", name)
 }
