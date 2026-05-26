@@ -256,8 +256,6 @@ func (r *LexV2BotLocaleBuildResource) pollBotLocale(ctx context.Context, client 
 	prevStatus := lextypes.BotLocaleStatus("")
 
 	for i := 0; i < maxIterations; i++ {
-		time.Sleep(sleepDuration)
-
 		out, err := client.DescribeBotLocale(ctx, &lexmodelsv2.DescribeBotLocaleInput{
 			BotId:      aws.String(botID),
 			BotVersion: aws.String(botVersion),
@@ -281,6 +279,7 @@ func (r *LexV2BotLocaleBuildResource) pollBotLocale(ctx context.Context, client 
 		}
 
 		prevStatus = status
+		time.Sleep(sleepDuration)
 	}
 
 	return fmt.Errorf("timed out waiting for bot locale %s/%s/%s to reach Built status", botID, botVersion, localeID)

@@ -514,8 +514,6 @@ func (r *LexV2BotImportResource) pollImport(ctx context.Context, client *lexmode
 	const sleepDuration = 5 * time.Second
 
 	for i := 0; i < maxIterations; i++ {
-		time.Sleep(sleepDuration)
-
 		out, descErr := client.DescribeImport(ctx, &lexmodelsv2.DescribeImportInput{
 			ImportId: aws.String(importID),
 		})
@@ -531,6 +529,8 @@ func (r *LexV2BotImportResource) pollImport(ctx context.Context, client *lexmode
 		case lextypes.ImportStatusInProgress, lextypes.ImportStatusDeleting:
 			// continue polling
 		}
+
+		time.Sleep(sleepDuration)
 	}
 	return "", lextypes.ImportStatusInProgress, nil, fmt.Errorf("timed out waiting for import %s to complete", importID)
 }
