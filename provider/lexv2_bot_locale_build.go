@@ -250,7 +250,7 @@ func (r *LexV2BotLocaleBuildResource) ImportState(ctx context.Context, req resou
 
 // pollBotLocale polls DescribeBotLocale until the status is Built or a failure is detected.
 func (r *LexV2BotLocaleBuildResource) pollBotLocale(ctx context.Context, client *lexmodelsv2.Client, botID, botVersion, localeID string) error {
-	const maxIterations = 24
+	const maxIterations = 72
 	const sleepDuration = 5 * time.Second
 
 	prevStatus := lextypes.BotLocaleStatus("")
