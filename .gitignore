@@ -8,3 +8,4 @@ terraform.tfstate*
 *.tfbak
 *.exe
 .vscode
+.claude/settings.json

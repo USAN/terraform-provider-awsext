@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/connect"
@@ -501,19 +502,50 @@ func (r *ConnectSecurityProfileResource) Delete(ctx context.Context, req resourc
 
 	conn := connect.NewFromConfig(r.config)
 
-	_, err := conn.DeleteSecurityProfile(ctx, &connect.DeleteSecurityProfileInput{
-		InstanceId:        aws.String(data.InstanceID.ValueString()),
-		SecurityProfileId: aws.String(data.SecurityProfileID.ValueString()),
-	})
-	if err != nil {
+	// AWS has eventual-consistency lag between QConnect AI agent deletion and the
+	// security profile reference count clearing. Retry on ResourceInUseException
+	// with exponential backoff for up to ~3 minutes.
+	const maxAttempts = 8
+	wait := 10 * time.Second
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		_, err := conn.DeleteSecurityProfile(ctx, &connect.DeleteSecurityProfileInput{
+			InstanceId:        aws.String(data.InstanceID.ValueString()),
+			SecurityProfileId: aws.String(data.SecurityProfileID.ValueString()),
+		})
+		if err == nil {
+			return
+		}
+
 		var nf *conntypes.ResourceNotFoundException
 		if errors.As(err, &nf) {
 			return
 		}
+
+		var inUse *conntypes.ResourceInUseException
+		if errors.As(err, &inUse) && attempt < maxAttempts {
+			tflog.Warn(ctx, "Connect Security Profile still in use, retrying",
+				map[string]any{
+					"security_profile_id": data.SecurityProfileID.ValueString(),
+					"attempt":             attempt,
+					"wait_seconds":        wait.Seconds(),
+				})
+			select {
+			case <-ctx.Done():
+				resp.Diagnostics.AddError("Context cancelled while waiting to delete Connect Security Profile", ctx.Err().Error())
+				return
+			case <-time.After(wait):
+			}
+			if wait < 60*time.Second {
+				wait *= 2
+			}
+			continue
+		}
+
 		resp.Diagnostics.AddError(
 			"Error deleting Connect Security Profile",
 			fmt.Sprintf("Could not delete Connect Security Profile %s: %s", data.SecurityProfileID.ValueString(), err),
 		)
+		return
 	}
 }
 
