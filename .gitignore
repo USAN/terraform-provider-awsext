@@ -8,3 +8,5 @@ terraform.tfstate*
 *.tfbak
 *.exe
 .vscode
+awsext-handoff.md
+awsext-provider-enhancement.md
