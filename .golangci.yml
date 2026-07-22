@@ -1,42 +1,71 @@
-version: "2"
+# USAN default golangci-lint configuration.
+#
+# Tune per project as needed, but treat this as the starting baseline.
+# Run with:
+#   golangci-lint run ./...
+
+run:
+  timeout: 5m
+  # Default branch — change if your repo uses something else.
+  # tests: true (default)
+  # modules-download-mode: readonly
+
 linters:
-  default: none
+  # Disable the default set so this file is authoritative.
+  disable-all: true
   enable:
-    - copyloopvar
-    - durationcheck
-    - errcheck
-    - forcetypeassert
-    - godot
-    - ineffassign
-    - makezero
-    - misspell
-    - nilerr
-    - predeclared
-    - staticcheck
-    - unconvert
-    - unparam
-    - unused
-    - usetesting
-  exclusions:
-    generated: lax
-    presets:
-      - comments
-      - common-false-positives
-      - legacy
-      - std-error-handling
-    paths:
-      - third_party$
-      - builtin$
-      - examples$
+    # Built into golangci-lint defaults, kept explicit:
+    - errcheck       # unchecked errors
+    - gosimple       # simplification suggestions
+    - govet          # vet checks
+    - ineffassign    # unused assignments
+    - staticcheck    # comprehensive static analysis
+    - unused         # unused identifiers
+
+    # Stricter additions:
+    - bodyclose      # http.Response.Body must be closed
+    - errorlint      # error wrapping correctness
+    - gocyclo        # cyclomatic complexity
+    - goimports      # import grouping/formatting
+    - gosec          # security audit
+    - misspell       # common misspellings
+    - nilnil         # functions returning (nil, nil) interface{}, *T patterns
+    - prealloc       # slice preallocation
+    - revive         # replacement for golint with extensible rules
+    - unconvert      # unnecessary type conversions
+    - unparam        # unused function parameters
+    - whitespace     # whitespace issues
+
+linters-settings:
+  gocyclo:
+    min-complexity: 15
+  goimports:
+    local-prefixes: github.com/USAN/
+  govet:
+    enable-all: true
+  revive:
+    rules:
+      - name: exported              # require godoc on exported identifiers
+      - name: error-return
+      - name: error-naming
+      - name: if-return
+      - name: var-naming
+      - name: unused-parameter
+      - name: superfluous-else
+      - name: package-comments
+
 issues:
+  exclude-use-default: false
+  # Rule 8 attribution banners contain "DO NOT EDIT", which lax mode treats as
+  # machine-generated and skips; generated code must still lint clean (Rule 3).
+  exclude-generated: strict
   max-issues-per-linter: 0
   max-same-issues: 0
-formatters:
-  enable:
-    - gofmt
-  exclusions:
-    generated: lax
-    paths:
-      - third_party$
-      - builtin$
-      - examples$
+  exclude-rules:
+    # Test files: relax some rules
+    - path: _test\.go
+      linters:
+        - gocyclo
+        - errcheck
+        - gosec
+        - unparam

@@ -1,6 +1,9 @@
 // Copyright (c) HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
+// Package provider implements the awsext Terraform provider and its
+// resources — AWS API operations missing from the official hashicorp/aws
+// provider.
 package provider
 
 import (
@@ -128,6 +131,8 @@ func (p *AwsExtProvider) Configure(ctx context.Context, req provider.ConfigureRe
 func (p *AwsExtProvider) Resources(ctx context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		NewAgentStatusResource,
+		NewAppstreamImageCopyResource,
+		NewAppstreamImagePermissionResource,
 		NewWorkspacesStreamingPropertiesResource,
 		NewWorkspacesImageResource,
 		NewWorkspacesImageCopyResource,
