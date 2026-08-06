@@ -1,22 +1,24 @@
 TEST?=$$(go list ./... | grep -v 'vendor')
-HOSTNAME=registry.terraform.io
-NAMESPACE=USAN
 NAME=awsext
 BINARY=terraform-provider-${NAME}
-VERSION=0.1.0
-OS_ARCH=darwin_amd64
 
-default: install
+default: build
 
+# build: produces the Mac (darwin/amd64) binary in the source directory.
+# ~/.terraformrc dev_overrides points here, so no separate install step needed.
 build:
 	go build -o ${BINARY}
 
+# build-linux: cross-compiles a linux/amd64 binary for AWS deployment and
+# installs it into DominionSolution/_BuildScripts/providers/ for the CI pipeline.
+DOMINION_PROVIDERS=../DominionSolution/_BuildScripts/providers
+build-linux:
+	GOOS=linux GOARCH=amd64 go build -o ${BINARY}_linux_amd64
+	cp ${BINARY}_linux_amd64 ${DOMINION_PROVIDERS}/terraform-provider-awsext
+	@echo "Linux binary installed to ${DOMINION_PROVIDERS}/terraform-provider-awsext"
+
 release:
 	goreleaser release --rm-dist --snapshot --skip-publish  --skip-sign
-
-install: build
-	mkdir -p ~/.terraform.d/plugins/${HOSTNAME}/${NAMESPACE}/${NAME}/${VERSION}/${OS_ARCH}
-	mv ${BINARY} ~/.terraform.d/plugins/${HOSTNAME}/${NAMESPACE}/${NAME}/${VERSION}/${OS_ARCH}
 
 test:
 	go test -i $(TEST) || exit 1

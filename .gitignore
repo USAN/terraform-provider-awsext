@@ -8,5 +8,6 @@ terraform.tfstate*
 *.tfbak
 *.exe
 .vscode
+.claude/settings.json
 awsext-handoff.md
 awsext-provider-enhancement.md
