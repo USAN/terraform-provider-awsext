@@ -142,6 +142,7 @@ func (p *AwsExtProvider) Resources(ctx context.Context) []func() resource.Resour
 		NewConnectIntegrationAssociationResource,
 		NewConnectBotAssociationResource,
 		NewConnectSecurityProfileResource,
+		NewConnectSecurityProfileAssociationResource,
 		NewLexV2BotImportResource,
 		NewLexV2BotLocaleBuildResource,
 		NewLexV2BotAliasResource,
