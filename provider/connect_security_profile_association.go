@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/connect"
 	conntypes "github.com/aws/aws-sdk-go-v2/service/connect/types"
 
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -27,11 +30,11 @@ type ConnectSecurityProfileAssociationResource struct {
 }
 
 type ConnectSecurityProfileAssociationResourceModel struct {
-	InstanceID         types.String `tfsdk:"instance_id"`
-	SecurityProfileID  types.String `tfsdk:"security_profile_id"`
-	EntityType         types.String `tfsdk:"entity_type"`
-	EntityArn          types.String `tfsdk:"entity_arn"`
-	ID                 types.String `tfsdk:"id"`
+	InstanceID        types.String `tfsdk:"instance_id"`
+	SecurityProfileID types.String `tfsdk:"security_profile_id"`
+	EntityType        types.String `tfsdk:"entity_type"`
+	EntityArn         types.String `tfsdk:"entity_arn"`
+	ID                types.String `tfsdk:"id"`
 }
 
 // securityProfileAssociationScopes returns the three ARN scopes Amazon Connect
@@ -140,25 +143,176 @@ func (r *ConnectSecurityProfileAssociationResource) Configure(ctx context.Contex
 }
 
 // -------------------------------------------------------------------
-// CRUD Stubs (Task 2)
+// Create
 // -------------------------------------------------------------------
 
 func (r *ConnectSecurityProfileAssociationResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-	panic("not implemented")
+	var data ConnectSecurityProfileAssociationResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	conn := connect.NewFromConfig(r.config)
+
+	for _, scopeArn := range securityProfileAssociationScopes(data.EntityArn.ValueString()) {
+		_, err := conn.AssociateSecurityProfiles(ctx, &connect.AssociateSecurityProfilesInput{
+			InstanceId: aws.String(data.InstanceID.ValueString()),
+			EntityArn:  aws.String(scopeArn),
+			EntityType: conntypes.EntityType(data.EntityType.ValueString()),
+			SecurityProfiles: []conntypes.SecurityProfileItem{
+				{Id: aws.String(data.SecurityProfileID.ValueString())},
+			},
+		})
+		if err != nil && !isResourceConflict(err) {
+			resp.Diagnostics.AddError(
+				"Error associating Connect Security Profile",
+				fmt.Sprintf("Could not associate security profile %s with entity %s: %s", data.SecurityProfileID.ValueString(), scopeArn, err),
+			)
+			return
+		}
+	}
+
+	data.ID = types.StringValue(connectSecurityProfileAssociationID(
+		data.InstanceID.ValueString(), data.SecurityProfileID.ValueString(), data.EntityArn.ValueString(),
+	))
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
+
+// -------------------------------------------------------------------
+// Read
+// -------------------------------------------------------------------
 
 func (r *ConnectSecurityProfileAssociationResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
-	panic("not implemented")
+	var data ConnectSecurityProfileAssociationResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	conn := connect.NewFromConfig(r.config)
+
+	for _, scopeArn := range securityProfileAssociationScopes(data.EntityArn.ValueString()) {
+		associated, err := r.scopeHasSecurityProfile(ctx, conn, data.InstanceID.ValueString(), data.EntityType.ValueString(), scopeArn, data.SecurityProfileID.ValueString())
+		if err != nil {
+			resp.Diagnostics.AddError(
+				"Error reading Connect Security Profile Association",
+				fmt.Sprintf("Could not list entity security profiles for %s: %s", scopeArn, err),
+			)
+			return
+		}
+		if !associated {
+			// All-or-nothing: if any of the 3 scopes has drifted, drop the
+			// whole resource from state so the next apply recreates all 3
+			// scopes cleanly rather than tracking partial association state.
+			resp.State.RemoveResource(ctx)
+			return
+		}
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
-func (r *ConnectSecurityProfileAssociationResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	panic("not implemented")
+// scopeHasSecurityProfile pages through ListEntitySecurityProfiles for one ARN
+// scope and reports whether securityProfileID is among the associated profiles.
+func (r *ConnectSecurityProfileAssociationResource) scopeHasSecurityProfile(ctx context.Context, conn *connect.Client, instanceID, entityType, entityArn, securityProfileID string) (bool, error) {
+	paginator := connect.NewListEntitySecurityProfilesPaginator(conn, &connect.ListEntitySecurityProfilesInput{
+		InstanceId: aws.String(instanceID),
+		EntityType: conntypes.EntityType(entityType),
+		EntityArn:  aws.String(entityArn),
+	})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return false, err
+		}
+		for _, sp := range page.SecurityProfiles {
+			if aws.ToString(sp.Id) == securityProfileID {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
+
+// -------------------------------------------------------------------
+// Update
+// -------------------------------------------------------------------
+
+// Update is never expected to perform any in-place mutation: every attribute
+// in the schema either forces replacement (instance_id, security_profile_id,
+// entity_type, entity_arn) or is Computed with UseStateForUnknown (id). The
+// terraform-plugin-framework resource.Resource interface still requires an
+// Update method, and the framework calls it whenever a plan has no
+// RequiresReplace diffs but is not entirely a no-op (e.g. after a
+// provider-driven state refresh). The minimal correct implementation is to
+// carry the plan straight into state.
+func (r *ConnectSecurityProfileAssociationResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var data ConnectSecurityProfileAssociationResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+// -------------------------------------------------------------------
+// Delete
+// -------------------------------------------------------------------
 
 func (r *ConnectSecurityProfileAssociationResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
-	panic("not implemented")
+	var data ConnectSecurityProfileAssociationResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	conn := connect.NewFromConfig(r.config)
+
+	for _, scopeArn := range securityProfileAssociationScopes(data.EntityArn.ValueString()) {
+		_, err := conn.DisassociateSecurityProfiles(ctx, &connect.DisassociateSecurityProfilesInput{
+			InstanceId: aws.String(data.InstanceID.ValueString()),
+			EntityArn:  aws.String(scopeArn),
+			EntityType: conntypes.EntityType(data.EntityType.ValueString()),
+			SecurityProfiles: []conntypes.SecurityProfileItem{
+				{Id: aws.String(data.SecurityProfileID.ValueString())},
+			},
+		})
+		if err != nil && !isResourceNotFound(err) {
+			resp.Diagnostics.AddError(
+				"Error disassociating Connect Security Profile",
+				fmt.Sprintf("Could not disassociate security profile %s from entity %s: %s", data.SecurityProfileID.ValueString(), scopeArn, err),
+			)
+			return
+		}
+	}
 }
 
+// -------------------------------------------------------------------
+// ImportState
+// -------------------------------------------------------------------
+
+// ImportState accepts the import ID in the format
+// <instance_id>/<security_profile_id>/<entity_arn>.
+//
+// Import command:
+//
+//	terraform import awsext_connect_security_profile_association.example <instance_id>/<security_profile_id>/<entity_arn>
 func (r *ConnectSecurityProfileAssociationResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	panic("not implemented")
+	parts := strings.SplitN(req.ID, "/", 3)
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		resp.Diagnostics.AddError(
+			"Invalid import ID",
+			fmt.Sprintf("Import ID must be in the format <instance_id>/<security_profile_id>/<entity_arn>, got: %q", req.ID),
+		)
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("instance_id"), parts[0])...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("security_profile_id"), parts[1])...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("entity_arn"), parts[2])...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("entity_type"), "AI_AGENT")...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 }
