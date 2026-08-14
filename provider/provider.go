@@ -156,6 +156,8 @@ func (p *AwsExtProvider) Resources(ctx context.Context) []func() resource.Resour
 		NewWorkspacesPoolRunningResource,
 		NewWorkspacesImagePermissionResource,
 		NewWorkspacesPoolResource,
+		NewQConnectAIAgentVersionResource,
+		NewQConnectAIPromptVersionResource,
 	}
 }
 
