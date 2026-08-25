@@ -39,19 +39,19 @@ type AppIntegrationsApplicationResource struct{ config aws.Config }
 // -------------------------------------------------------------------
 
 type AppIntegrationsApplicationResourceModel struct {
-	ApplicationId          types.String                          `tfsdk:"application_id"`
-	ApplicationArn         types.String                          `tfsdk:"application_arn"`
-	Name                   types.String                          `tfsdk:"name"`
-	Namespace              types.String                          `tfsdk:"namespace"`
-	Description            types.String                          `tfsdk:"description"`
-	ApplicationType        types.String                          `tfsdk:"application_type"`
-	ApplicationSourceConfig *AppIntegrationsSourceConfigModel    `tfsdk:"application_source_config"`
-	Permissions            types.List                            `tfsdk:"permissions"`
-	Publications           []AppIntegrationsPublicationModel     `tfsdk:"publications"`
-	Subscriptions          []AppIntegrationsSubscriptionModel    `tfsdk:"subscriptions"`
-	InitializationTimeout  types.Int64                           `tfsdk:"initialization_timeout"`
-	IframeConfig           *AppIntegrationsIframeConfigModel     `tfsdk:"iframe_config"`
-	Tags                   types.Map                             `tfsdk:"tags"`
+	ApplicationId           types.String                       `tfsdk:"application_id"`
+	ApplicationArn          types.String                       `tfsdk:"application_arn"`
+	Name                    types.String                       `tfsdk:"name"`
+	Namespace               types.String                       `tfsdk:"namespace"`
+	Description             types.String                       `tfsdk:"description"`
+	ApplicationType         types.String                       `tfsdk:"application_type"`
+	ApplicationSourceConfig *AppIntegrationsSourceConfigModel  `tfsdk:"application_source_config"`
+	Permissions             types.List                         `tfsdk:"permissions"`
+	Publications            []AppIntegrationsPublicationModel  `tfsdk:"publications"`
+	Subscriptions           []AppIntegrationsSubscriptionModel `tfsdk:"subscriptions"`
+	InitializationTimeout   types.Int64                        `tfsdk:"initialization_timeout"`
+	IframeConfig            *AppIntegrationsIframeConfigModel  `tfsdk:"iframe_config"`
+	Tags                    types.Map                          `tfsdk:"tags"`
 }
 
 type AppIntegrationsSourceConfigModel struct {
@@ -443,6 +443,14 @@ func (r *AppIntegrationsApplicationResource) Read(ctx context.Context, req resou
 				ApprovedOrigins: approvedOrigins,
 			},
 		}
+	} else {
+		// Returns named error instead of a crash
+		resp.Diagnostics.AddError(
+			"Error reading AppIntegrations Application",
+			fmt.Sprintf("Application %s is missing ApplicationSourceConfig in the API Response.",
+				data.ApplicationId.ValueString()),
+		)
+		return
 	}
 
 	// Permissions

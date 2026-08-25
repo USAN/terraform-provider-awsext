@@ -39,19 +39,19 @@ type BedrockAgentCoreGatewayResource struct{ config aws.Config }
 // -------------------------------------------------------------------
 
 type BedrockAgentCoreGatewayResourceModel struct {
-	GatewayId               types.String                            `tfsdk:"gateway_id"`
-	GatewayArn              types.String                            `tfsdk:"gateway_arn"`
-	GatewayUrl              types.String                            `tfsdk:"gateway_url"`
-	Status                  types.String                            `tfsdk:"status"`
-	Name                    types.String                            `tfsdk:"name"`
-	Description             types.String                            `tfsdk:"description"`
-	RoleArn                 types.String                            `tfsdk:"role_arn"`
-	ProtocolType            types.String                            `tfsdk:"protocol_type"`
-	AuthorizerType          types.String                            `tfsdk:"authorizer_type"`
-	ExceptionLevel          types.String                            `tfsdk:"exception_level"`
-	KmsKeyArn               types.String                            `tfsdk:"kms_key_arn"`
-	CustomJwtAuthorizer     *BedrockAgentCoreCustomJWTAuthorizerModel `tfsdk:"custom_jwt_authorizer"`
-	AllowedAudience         types.List                              `tfsdk:"allowed_audience"`
+	GatewayId           types.String                              `tfsdk:"gateway_id"`
+	GatewayArn          types.String                              `tfsdk:"gateway_arn"`
+	GatewayUrl          types.String                              `tfsdk:"gateway_url"`
+	Status              types.String                              `tfsdk:"status"`
+	Name                types.String                              `tfsdk:"name"`
+	Description         types.String                              `tfsdk:"description"`
+	RoleArn             types.String                              `tfsdk:"role_arn"`
+	ProtocolType        types.String                              `tfsdk:"protocol_type"`
+	AuthorizerType      types.String                              `tfsdk:"authorizer_type"`
+	ExceptionLevel      types.String                              `tfsdk:"exception_level"`
+	KmsKeyArn           types.String                              `tfsdk:"kms_key_arn"`
+	CustomJwtAuthorizer *BedrockAgentCoreCustomJWTAuthorizerModel `tfsdk:"custom_jwt_authorizer"`
+	AllowedAudience     types.List                                `tfsdk:"allowed_audience"`
 }
 
 type BedrockAgentCoreCustomJWTAuthorizerModel struct {
@@ -165,9 +165,9 @@ func (r *BedrockAgentCoreGatewayResource) Schema(ctx context.Context, req resour
 				},
 			},
 			"allowed_audience": schema.ListAttribute{
-				Computed:    true,
-				ElementType: types.StringType,
-				Description: "Audience values accepted on incoming JWTs. Set by this resource to [gateway_id] after create/update.",
+				Computed:      true,
+				ElementType:   types.StringType,
+				Description:   "Audience values accepted on incoming JWTs. Set by this resource to [gateway_id] after create/update.",
 				PlanModifiers: []planmodifier.List{},
 			},
 		},
@@ -471,7 +471,7 @@ func (r *BedrockAgentCoreGatewayResource) Update(ctx context.Context, req resour
 		in.KmsKeyArn = aws.String(plan.KmsKeyArn.ValueString())
 	}
 
-	out, err := conn.UpdateGateway(ctx, in)
+	out, err := retryUpdateGatewayUntilReady(ctx, conn, in)
 	if err != nil {
 		resp.Diagnostics.AddError("Error updating AgentCore Gateway",
 			fmt.Sprintf("Could not update gateway %s: %s", gatewayId, err))
@@ -546,9 +546,9 @@ func retryUpdateGatewayUntilReady(
 	in *bedrockagentcorecontrol.UpdateGatewayInput,
 ) (*bedrockagentcorecontrol.UpdateGatewayOutput, error) {
 	const (
-		maxWait         = 3 * time.Minute
-		initialWait     = 2 * time.Second
-		maxBackoff      = 15 * time.Second
+		maxWait          = 3 * time.Minute
+		initialWait      = 2 * time.Second
+		maxBackoff       = 15 * time.Second
 		creatingStateMsg = "creating state"
 	)
 	// Pins the matched substring so that if AWS ever changes the message text,
@@ -572,7 +572,10 @@ func retryUpdateGatewayUntilReady(
 			if ve.Message != nil {
 				msg = *ve.Message
 			}
-			if !strings.Contains(strings.ToLower(msg), creatingStateMsg) {
+
+			// Retries on either "creating state" or "failed state"
+			msgLower := strings.ToLower(msg)
+			if !strings.Contains(msgLower, "creating state") && !strings.Contains(msgLower, "failed state") {
 				return nil, err
 			}
 		}
