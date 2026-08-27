@@ -56,6 +56,44 @@ func connectSecurityProfileAssociationID(instanceID, securityProfileID, entityAr
 	return instanceID + "/" + securityProfileID + "/" + entityArn
 }
 
+// disassociateSecurityProfilesFromEntity lists every security profile
+// currently associated with entityArn (via the documented, structured
+// ListEntitySecurityProfiles lookup — entity-to-profiles is the only
+// direction AWS exposes; there is no reverse profile-to-entities API) and
+// disassociates each one. Used to clear a specific ARN scope (e.g. a
+// numbered AI Agent version) that awsext_connect_security_profile_association
+// never manages, since it only fans out to the base/$LATEST/$SAVED scopes.
+func disassociateSecurityProfilesFromEntity(ctx context.Context, conn *connect.Client, instanceID, entityArn string) error {
+	paginator := connect.NewListEntitySecurityProfilesPaginator(conn, &connect.ListEntitySecurityProfilesInput{
+		InstanceId: aws.String(instanceID),
+		EntityType: conntypes.EntityTypeAiAgent,
+		EntityArn:  aws.String(entityArn),
+	})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			if isResourceNotFound(err) {
+				return nil
+			}
+			return fmt.Errorf("listing security profiles for %s: %w", entityArn, err)
+		}
+		for _, sp := range page.SecurityProfiles {
+			_, err := conn.DisassociateSecurityProfiles(ctx, &connect.DisassociateSecurityProfilesInput{
+				InstanceId: aws.String(instanceID),
+				EntityArn:  aws.String(entityArn),
+				EntityType: conntypes.EntityTypeAiAgent,
+				SecurityProfiles: []conntypes.SecurityProfileItem{
+					{Id: sp.Id},
+				},
+			})
+			if err != nil && !isResourceNotFound(err) {
+				return fmt.Errorf("disassociating security profile %s from %s: %w", aws.ToString(sp.Id), entityArn, err)
+			}
+		}
+	}
+	return nil
+}
+
 func isResourceConflict(err error) bool {
 	var confErr *conntypes.ResourceConflictException
 	return errors.As(err, &confErr)

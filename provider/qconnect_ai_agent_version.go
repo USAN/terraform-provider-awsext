@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/connect"
 	"github.com/aws/aws-sdk-go-v2/service/qconnect"
 	qconnecttypes "github.com/aws/aws-sdk-go-v2/service/qconnect/types"
 
@@ -25,6 +26,20 @@ import (
 var _ resource.Resource = &QConnectAIAgentVersionResource{}
 var _ resource.ResourceWithImportState = &QConnectAIAgentVersionResource{}
 
+// versionedAIAgentArn qualifies agentArn with ":<versionNumber>", stripping
+// any existing numeric suffix first. CreateAIAgentVersion returns the bare
+// entity ARN (needs the suffix appended), but GetAIAgent called with an
+// already-versioned ai_agent_id returns the ARN already qualified — treating
+// both the same way (as this code used to) doubles the suffix into
+// ".../<id>:1:1", corrupting state on every refresh and breaking any lookup
+// against the real ARN (confirmed against prod-mock 2026-08-27:
+// ListEntitySecurityProfiles rejected the doubled ARN during Delete's
+// disassociate step).
+func versionedAIAgentArn(agentArn string, versionNumber int64) string {
+	base := strings.TrimSuffix(agentArn, fmt.Sprintf(":%d", versionNumber))
+	return fmt.Sprintf("%s:%d", base, versionNumber)
+}
+
 func NewQConnectAIAgentVersionResource() resource.Resource {
 	return &QConnectAIAgentVersionResource{}
 }
@@ -35,6 +50,7 @@ type QConnectAIAgentVersionResourceModel struct {
 	AssistantId           types.String `tfsdk:"assistant_id"`
 	AiAgentId             types.String `tfsdk:"ai_agent_id"`
 	ModifiedTimeSeconds   types.Int64  `tfsdk:"modified_time_seconds"`
+	ConnectInstanceID     types.String `tfsdk:"connect_instance_id"`
 	VersionNumber         types.Int64  `tfsdk:"version_number"`
 	AIAgentARNWithVersion types.String `tfsdk:"ai_agent_arn_with_version"`
 	AIAgentIdWithVersion  types.String `tfsdk:"ai_agent_id_with_version"`
@@ -66,6 +82,11 @@ func (r *QConnectAIAgentVersionResource) Schema(ctx context.Context, req resourc
 				Optional:      true,
 				Description:   "Unix epoch seconds of the last-known modification time of the AI agent. When set, the API rejects the version create if the AI agent has been modified more recently, preventing accidental version creation on stale configs.",
 				PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()},
+			},
+			"connect_instance_id": schema.StringAttribute{
+				Optional:      true,
+				Description:   "Amazon Connect instance ID. When set, Delete disassociates this version's numbered ARN from any Connect Security Profile still holding it (AssociateSecurityProfiles fans a base entity_arn out to 3 scopes, none of which is a numbered version — AWS never disassociates the numbered scope itself when the version is deleted, which otherwise permanently blocks DeleteSecurityProfile). Omit if this AI Agent's security profile associations aren't managed via awsext_connect_security_profile_association.",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
 			},
 			"version_number": schema.Int64Attribute{
 				Computed:      true,
@@ -138,7 +159,7 @@ func (r *QConnectAIAgentVersionResource) Create(ctx context.Context, req resourc
 	if out.AiAgent != nil {
 		agentArn = aws.ToString(out.AiAgent.AiAgentArn)
 	}
-	data.AIAgentARNWithVersion = types.StringValue(fmt.Sprintf("%s:%d", agentArn, versionNumber))
+	data.AIAgentARNWithVersion = types.StringValue(versionedAIAgentArn(agentArn, versionNumber))
 	data.AIAgentIdWithVersion = types.StringValue(fmt.Sprintf("%s:%d", data.AiAgentId.ValueString(), versionNumber))
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -181,7 +202,7 @@ func (r *QConnectAIAgentVersionResource) Read(ctx context.Context, req resource.
 	}
 	data.VersionNumber = types.Int64Value(versionNumber)
 	data.AIAgentARNWithVersion = types.StringValue(
-		fmt.Sprintf("%s:%d", aws.ToString(out.AiAgent.AiAgentArn), versionNumber),
+		versionedAIAgentArn(aws.ToString(out.AiAgent.AiAgentArn), versionNumber),
 	)
 	data.AIAgentIdWithVersion = types.StringValue(
 		fmt.Sprintf("%s:%d", data.AiAgentId.ValueString(), versionNumber),
@@ -206,6 +227,20 @@ func (r *QConnectAIAgentVersionResource) Delete(ctx context.Context, req resourc
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
 		return
+	}
+
+	if !data.ConnectInstanceID.IsNull() && !data.ConnectInstanceID.IsUnknown() {
+		if err := disassociateSecurityProfilesFromEntity(
+			ctx, connect.NewFromConfig(r.config),
+			data.ConnectInstanceID.ValueString(), data.AIAgentARNWithVersion.ValueString(),
+		); err != nil {
+			resp.Diagnostics.AddError(
+				"Error disassociating Connect Security Profiles from AI Agent version",
+				fmt.Sprintf("Could not clear security profile associations for %s before delete: %s",
+					data.AIAgentARNWithVersion.ValueString(), err),
+			)
+			return
+		}
 	}
 
 	conn := qconnect.NewFromConfig(r.config)
