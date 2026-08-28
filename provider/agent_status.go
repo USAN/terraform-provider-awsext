@@ -371,5 +371,5 @@ func (r *AgentStatusResource) Delete(ctx context.Context, req resource.DeleteReq
 }
 
 func (r *AgentStatusResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+	resource.ImportStatePassthroughID(ctx, path.Root("arn"), req, resp)
 }
