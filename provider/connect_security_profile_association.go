@@ -72,7 +72,7 @@ func disassociateSecurityProfilesFromEntity(ctx context.Context, conn *connect.C
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			if isResourceNotFound(err) {
+			if isResourceNotFound(err) || isNoWisdomConnector(err) {
 				return nil
 			}
 			return fmt.Errorf("listing security profiles for %s: %w", entityArn, err)
@@ -102,6 +102,19 @@ func isResourceConflict(err error) bool {
 func isResourceNotFound(err error) bool {
 	var nfErr *conntypes.ResourceNotFoundException
 	return errors.As(err, &nfErr)
+}
+
+// isNoWisdomConnector reports whether err is the InvalidRequestException
+// Connect returns from ListEntitySecurityProfiles when the instance's
+// Wisdom/Q in Connect integration association has already been torn down
+// ("No wisdom connectors found"). This happens on destroy when Terraform
+// removes that integration association before reaching an AI Agent version's
+// Delete, which calls disassociateSecurityProfilesFromEntity. With no Wisdom
+// connector left, there is nothing to disassociate, so treat it as a no-op
+// rather than a fatal error.
+func isNoWisdomConnector(err error) bool {
+	var irErr *conntypes.InvalidRequestException
+	return errors.As(err, &irErr) && strings.Contains(irErr.ErrorMessage(), "No wisdom connectors found")
 }
 
 // -------------------------------------------------------------------
