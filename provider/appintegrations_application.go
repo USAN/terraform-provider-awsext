@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/appintegrations"
@@ -628,6 +629,23 @@ func (r *AppIntegrationsApplicationResource) Delete(ctx context.Context, req res
 
 	conn := appintegrations.NewFromConfig(r.config)
 
+	// Deleting the Connect IntegrationAssociation that references this Application
+	// triggers Connect's own async cleanup of the ApplicationAssociation records it
+	// created (ClientId=connect.amazonaws.com). That cleanup is eventually consistent
+	// and has been observed by AWS Support to occasionally fail to run at all, which
+	// then blocks DeleteApplication with associations still attached and no public API
+	// to remove them directly. Poll here so a stuck cleanup surfaces as a clear
+	// Terraform error immediately, instead of a bare "Application still has
+	// associations" API error days later.
+	if err := waitForNoApplicationAssociations(ctx, conn, data.ApplicationId.ValueString(), 5*time.Second, 60*time.Second); err != nil {
+		resp.Diagnostics.AddError("ApplicationAssociations did not clear before delete",
+			fmt.Sprintf("Application %s still has associated integrations after waiting: %s. "+
+				"This indicates Connect's automatic ApplicationAssociation cleanup failed; "+
+				"contact AWS Support to remove the stuck association before retrying delete.",
+				data.ApplicationArn.ValueString(), err))
+		return
+	}
+
 	_, err := conn.DeleteApplication(ctx, &appintegrations.DeleteApplicationInput{
 		Arn: aws.String(data.ApplicationArn.ValueString()),
 	})
@@ -638,6 +656,52 @@ func (r *AppIntegrationsApplicationResource) Delete(ctx context.Context, req res
 		}
 		resp.Diagnostics.AddError("Error deleting AppIntegrations Application",
 			fmt.Sprintf("Could not delete Application %s: %s", data.ApplicationArn.ValueString(), err))
+	}
+}
+
+// applicationAssociationLister is the subset of the appintegrations client
+// this poll needs, narrowed to an interface so tests can supply a fake
+// without making real AWS calls.
+type applicationAssociationLister interface {
+	ListApplicationAssociations(ctx context.Context, params *appintegrations.ListApplicationAssociationsInput, optFns ...func(*appintegrations.Options)) (*appintegrations.ListApplicationAssociationsOutput, error)
+}
+
+// waitForNoApplicationAssociations polls ListApplicationAssociations until it
+// returns empty or the timeout elapses. Amazon Connect's teardown of the
+// integration association it owns is eventually consistent, so a brief wait
+// here absorbs normal propagation delay before treating a lingering
+// association as a real failure.
+func waitForNoApplicationAssociations(ctx context.Context, conn applicationAssociationLister, applicationID string, pollInterval, timeout time.Duration) error {
+	if applicationID == "" {
+		return nil
+	}
+
+	deadline := time.Now().Add(timeout)
+	for {
+		out, err := conn.ListApplicationAssociations(ctx, &appintegrations.ListApplicationAssociationsInput{
+			ApplicationId: aws.String(applicationID),
+		})
+		if err != nil {
+			var nf *appintegrationstypes.ResourceNotFoundException
+			if errors.As(err, &nf) {
+				return nil
+			}
+			return fmt.Errorf("listing application associations: %w", err)
+		}
+
+		if len(out.ApplicationAssociations) == 0 {
+			return nil
+		}
+
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%d association(s) still present after %s", len(out.ApplicationAssociations), timeout)
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(pollInterval):
+		}
 	}
 }
 
