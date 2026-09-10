@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/lexmodelsv2"
 	lextypes "github.com/aws/aws-sdk-go-v2/service/lexmodelsv2/types"
 
+	"github.com/hashicorp/terraform-plugin-framework-jsontypes/jsontypes"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -30,9 +31,9 @@ type LexV2ResourcePolicyResource struct {
 }
 
 type LexV2ResourcePolicyModel struct {
-	ResourceArn types.String `tfsdk:"resource_arn"`
-	Policy      types.String `tfsdk:"policy"`
-	RevisionId  types.String `tfsdk:"revision_id"`
+	ResourceArn types.String         `tfsdk:"resource_arn"`
+	Policy      jsontypes.Normalized `tfsdk:"policy"`
+	RevisionId  types.String         `tfsdk:"revision_id"`
 }
 
 func (r *LexV2ResourcePolicyResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -54,11 +55,15 @@ func (r *LexV2ResourcePolicyResource) Schema(_ context.Context, _ resource.Schem
 			},
 			"policy": schema.StringAttribute{
 				Required:    true,
+				CustomType:  jsontypes.NormalizedType{},
 				Description: "JSON policy document to attach to the resource.",
 			},
 			"revision_id": schema.StringAttribute{
 				Computed:    true,
 				Description: "Current revision ID of the resource policy.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 		},
 	}
@@ -142,7 +147,7 @@ func (r *LexV2ResourcePolicyResource) Read(ctx context.Context, req resource.Rea
 		return
 	}
 
-	data.Policy = types.StringPointerValue(out.Policy)
+	data.Policy = jsontypes.NewNormalizedPointerValue(out.Policy)
 	data.RevisionId = types.StringPointerValue(out.RevisionId)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
