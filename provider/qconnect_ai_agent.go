@@ -536,9 +536,22 @@ func summarizeToolConfigurations(tools []qconnecttypes.ToolConfiguration) (map[s
 		if err != nil {
 			return nil, fmt.Errorf("tool %s: %w", aws.ToString(t.ToolName), err)
 		}
+
+		// AWS owns description for built-in "aws_service__"-prefixed tools
+		// and doesn't apply customer-supplied overrides to it -- confirmed
+		// live against prod-mock: an UpdateAIAgent that only changed this
+		// field returned success, but the live value never changed even
+		// after several retries. instruction and overrideInputValues ARE
+		// customizable for these tools (also confirmed live), so only
+		// description is excluded here, and only for this tool class.
+		description := aws.ToString(t.Description)
+		if strings.HasPrefix(aws.ToString(t.ToolId), "aws_service__") {
+			description = ""
+		}
+
 		out[aws.ToString(t.ToolName)] = toolSummary{
 			ToolType:    string(t.ToolType),
-			Description: aws.ToString(t.Description),
+			Description: description,
 			Instruction: string(instrJSON),
 			Overrides:   string(ovJSON),
 		}
