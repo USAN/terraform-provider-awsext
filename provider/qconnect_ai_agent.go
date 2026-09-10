@@ -313,12 +313,18 @@ func (r *QConnectAIAgentResource) Update(ctx context.Context, req resource.Updat
 		}
 	}
 
+	// A tags failure (e.g. missing qconnect:TagResource permission) is kept
+	// non-fatal to state persistence: the agent's configuration/visibility
+	// change above may have genuinely succeeded and been verified, and
+	// returning early here would discard that from state, leaving Terraform
+	// stuck re-attempting (and re-failing on tags) every apply even once the
+	// real, wanted change already landed. plan.Tags falls back to the actual
+	// (unchanged) state.Tags so the pending tag diff stays visible for a
+	// retry, rather than being silently marked as applied.
 	if err := updateQConnectTags(ctx, conn, state.AiAgentArn.ValueString(), state.Tags, plan.Tags); err != nil {
 		resp.Diagnostics.AddError("Error updating Q in Connect AI Agent tags", err.Error())
-		return
-	}
-
-	if tags, err := readQConnectTags(ctx, conn, state.AiAgentArn.ValueString()); err == nil {
+		plan.Tags = state.Tags
+	} else if tags, err := readQConnectTags(ctx, conn, state.AiAgentArn.ValueString()); err == nil {
 		plan.Tags = tags
 	}
 
