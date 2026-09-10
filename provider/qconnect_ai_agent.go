@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/qconnect"
@@ -559,44 +560,61 @@ func verifyOrchestrationToolsApplied(ctx context.Context, conn *qconnect.Client,
 	if err != nil {
 		return fmt.Errorf("parsing intended configuration: %w", err)
 	}
-
-	out, err := conn.GetAIAgent(ctx, &qconnect.GetAIAgentInput{
-		AssistantId: aws.String(assistantId),
-		AiAgentId:   aws.String(aiAgentId),
-	})
-	if err != nil {
-		return fmt.Errorf("re-reading AI Agent to verify update: %w", err)
-	}
-	member, ok := out.AiAgent.Configuration.(*qconnecttypes.AIAgentConfigurationMemberOrchestrationAIAgentConfiguration)
-	if !ok {
-		return fmt.Errorf("AI Agent configuration is not an orchestration configuration after update")
-	}
-
 	wantTools, err := summarizeToolConfigurations(intended.ToolConfigurations)
 	if err != nil {
 		return fmt.Errorf("summarizing intended tools: %w", err)
 	}
-	gotTools, err := summarizeToolConfigurations(member.Value.ToolConfigurations)
-	if err != nil {
-		return fmt.Errorf("summarizing actual tools: %w", err)
-	}
 
-	for name, want := range wantTools {
-		got, ok := gotTools[name]
-		if !ok {
-			return fmt.Errorf("tool %q is missing from the AI Agent after the write", name)
+	// A handful of retries with a short pause: GetAIAgent can lag briefly
+	// behind a just-completed Create/UpdateAIAgent, and a single immediate
+	// read shouldn't be mistaken for the write silently not taking.
+	const maxAttempts = 4
+	const retryDelay = 3 * time.Second
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		out, err := conn.GetAIAgent(ctx, &qconnect.GetAIAgentInput{
+			AssistantId: aws.String(assistantId),
+			AiAgentId:   aws.String(aiAgentId),
+		})
+		if err != nil {
+			return fmt.Errorf("re-reading AI Agent to verify update: %w", err)
 		}
-		if got != want {
-			return fmt.Errorf(
-				"tool %q did not apply as requested — the API call succeeded but the live "+
-					"configuration doesn't match (wanted description=%q instruction=%q overrideInputValues=%q; "+
-					"got description=%q instruction=%q overrideInputValues=%q)",
-				name, want.Description, want.Instruction, want.Overrides,
-				got.Description, got.Instruction, got.Overrides,
-			)
+		member, ok := out.AiAgent.Configuration.(*qconnecttypes.AIAgentConfigurationMemberOrchestrationAIAgentConfiguration)
+		if !ok {
+			return fmt.Errorf("AI Agent configuration is not an orchestration configuration after update")
+		}
+		gotTools, err := summarizeToolConfigurations(member.Value.ToolConfigurations)
+		if err != nil {
+			return fmt.Errorf("summarizing actual tools: %w", err)
+		}
+
+		lastErr = nil
+		for name, want := range wantTools {
+			got, ok := gotTools[name]
+			if !ok {
+				lastErr = fmt.Errorf("tool %q is missing from the AI Agent after the write", name)
+				break
+			}
+			if got != want {
+				lastErr = fmt.Errorf(
+					"tool %q did not apply as requested — the API call succeeded but the live "+
+						"configuration doesn't match (wanted description=%q instruction=%q overrideInputValues=%q; "+
+						"got description=%q instruction=%q overrideInputValues=%q)",
+					name, want.Description, want.Instruction, want.Overrides,
+					got.Description, got.Instruction, got.Overrides,
+				)
+				break
+			}
+		}
+		if lastErr == nil {
+			return nil
+		}
+		if attempt < maxAttempts {
+			time.Sleep(retryDelay)
 		}
 	}
-	return nil
+	return lastErr
 }
 
 func unmarshalOrchestrationConfig(j string) (qconnecttypes.OrchestrationAIAgentConfiguration, error) {
