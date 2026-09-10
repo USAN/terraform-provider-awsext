@@ -74,8 +74,8 @@ func (r *QConnectAIAgentResource) Schema(ctx context.Context, req resource.Schem
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
 			},
 			"type": schema.StringAttribute{
-				Required:    true,
-				Description: "Type of the AI Agent. One of ANSWER_RECOMMENDATION, MANUAL_SEARCH, SELF_SERVICE, EMAIL_OVERVIEW, EMAIL_RESPONSE, EMAIL_GENERATIVE_ANSWER, NOTE_TAKING, ORCHESTRATION, CASE_SUMMARIZATION.",
+				Required:      true,
+				Description:   "Type of the AI Agent. One of ANSWER_RECOMMENDATION, MANUAL_SEARCH, SELF_SERVICE, EMAIL_OVERVIEW, EMAIL_RESPONSE, EMAIL_GENERATIVE_ANSWER, NOTE_TAKING, ORCHESTRATION, CASE_SUMMARIZATION.",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
 				Validators: []validator.String{
 					stringvalidator.OneOf(
@@ -459,13 +459,14 @@ type orchConfigJSON struct {
 }
 
 type toolConfigJSON struct {
-	ToolId                    string                      `json:"toolId,omitempty"`
-	ToolName                  string                      `json:"toolName"`
-	ToolType                  string                      `json:"toolType"`
-	Instruction               json.RawMessage             `json:"instruction"`
-	OverrideInputValues       json.RawMessage             `json:"overrideInputValues"`
-	InputSchema               json.RawMessage             `json:"inputSchema,omitempty"`
-	UserInteractionConfig     *userInteractionConfigJSON  `json:"userInteractionConfiguration,omitempty"`
+	ToolId                string                     `json:"toolId,omitempty"`
+	ToolName              string                     `json:"toolName"`
+	ToolType              string                     `json:"toolType"`
+	Description           string                     `json:"description,omitempty"`
+	Instruction           json.RawMessage            `json:"instruction"`
+	OverrideInputValues   json.RawMessage            `json:"overrideInputValues"`
+	InputSchema           json.RawMessage            `json:"inputSchema,omitempty"`
+	UserInteractionConfig *userInteractionConfigJSON `json:"userInteractionConfiguration,omitempty"`
 }
 
 type userInteractionConfigJSON struct {
@@ -515,6 +516,9 @@ func unmarshalOrchestrationConfig(j string) (qconnecttypes.OrchestrationAIAgentC
 		}
 		if t.ToolId != "" {
 			tool.ToolId = aws.String(t.ToolId)
+		}
+		if t.Description != "" {
+			tool.Description = aws.String(t.Description)
 		}
 
 		instr, err := jsonToToolInstruction(t.Instruction)
@@ -597,6 +601,9 @@ func marshalOrchestrationConfig(cfg qconnecttypes.OrchestrationAIAgentConfigurat
 		}
 		if t.ToolId != nil {
 			tool.ToolId = aws.ToString(t.ToolId)
+		}
+		if t.Description != nil {
+			tool.Description = aws.ToString(t.Description)
 		}
 		if t.InputSchema != nil {
 			var v interface{}
