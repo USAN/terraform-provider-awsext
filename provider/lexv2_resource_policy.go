@@ -60,10 +60,9 @@ func (r *LexV2ResourcePolicyResource) Schema(_ context.Context, _ resource.Schem
 			},
 			"revision_id": schema.StringAttribute{
 				Computed:    true,
-				Description: "Current revision ID of the resource policy.",
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
-				},
+				Description: "Current revision ID of the resource policy. Not marked UseStateForUnknown: " +
+					"UpdateResourcePolicy always bumps this, so the plan must show it as known-after-apply " +
+					"rather than predicting it stays at the prior value.",
 			},
 		},
 	}
