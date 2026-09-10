@@ -137,10 +137,9 @@ func (r *LexV2BotImportResource) Schema(ctx context.Context, req resource.Schema
 			},
 			"import_id": schema.StringAttribute{
 				Computed:    true,
-				Description: "The import job identifier returned by CreateUploadUrl.",
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
-				},
+				Description: "The import job identifier returned by CreateUploadUrl. Not marked " +
+					"UseStateForUnknown: Update runs a new import job each time the archive changes, " +
+					"so the plan must show it as known-after-apply rather than predicting it stays put.",
 			},
 			"tags": schema.MapAttribute{
 				Optional:    true,
