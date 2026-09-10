@@ -543,15 +543,22 @@ func summarizeToolConfigurations(tools []qconnecttypes.ToolConfiguration) (map[s
 			return nil, fmt.Errorf("tool %s: %w", aws.ToString(t.ToolName), err)
 		}
 
-		// AWS owns description for built-in "aws_service__"-prefixed tools
-		// and doesn't apply customer-supplied overrides to it -- confirmed
-		// live against prod-mock: an UpdateAIAgent that only changed this
-		// field returned success, but the live value never changed even
-		// after several retries. instruction and overrideInputValues ARE
-		// customizable for these tools (also confirmed live), so only
-		// description is excluded here, and only for this tool class.
+		// AWS owns description for every MODEL_CONTEXT_PROTOCOL tool -- these
+		// are all backed by an external tool definition (an AWS service like
+		// the built-in Retrieve tool, or a Bedrock AgentCore Gateway target),
+		// and QConnect always mirrors that source's own description,
+		// ignoring whatever the AI Agent configuration says. Confirmed live
+		// against prod-mock for both: the built-in "aws_service__"-prefixed
+		// Retrieve tool, and a customer's own gateway-sourced tool
+		// (sapapi___addresssearchcitystate) -- an UpdateAIAgent that only
+		// changed this field returned success, but the live value never
+		// changed for either, even after several retries. instruction and
+		// overrideInputValues ARE customizable for these tools (also
+		// confirmed live), so only description is excluded here.
+		// RETURN_TO_CONTROL tools have no external schema source and are
+		// fully customer-authored, so their description stays verified.
 		description := aws.ToString(t.Description)
-		if strings.HasPrefix(aws.ToString(t.ToolId), "aws_service__") {
+		if t.ToolType == qconnecttypes.ToolTypeModelContextProtocol {
 			description = ""
 		}
 
