@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/qconnect"
@@ -74,8 +75,8 @@ func (r *QConnectAIAgentResource) Schema(ctx context.Context, req resource.Schem
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
 			},
 			"type": schema.StringAttribute{
-				Required:    true,
-				Description: "Type of the AI Agent. One of ANSWER_RECOMMENDATION, MANUAL_SEARCH, SELF_SERVICE, EMAIL_OVERVIEW, EMAIL_RESPONSE, EMAIL_GENERATIVE_ANSWER, NOTE_TAKING, ORCHESTRATION, CASE_SUMMARIZATION.",
+				Required:      true,
+				Description:   "Type of the AI Agent. One of ANSWER_RECOMMENDATION, MANUAL_SEARCH, SELF_SERVICE, EMAIL_OVERVIEW, EMAIL_RESPONSE, EMAIL_GENERATIVE_ANSWER, NOTE_TAKING, ORCHESTRATION, CASE_SUMMARIZATION.",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
 				Validators: []validator.String{
 					stringvalidator.OneOf(
@@ -190,6 +191,20 @@ func (r *QConnectAIAgentResource) Create(ctx context.Context, req resource.Creat
 	// schemas for built-in tools (e.g. Retrieve), which would cause
 	// "Provider produced inconsistent result after apply" errors and
 	// permanent diffs. Trust the plan value as the source of truth.
+	//
+	// That trust previously extended to whether the write even took —
+	// verifyOrchestrationToolsApplied re-reads the agent and confirms the
+	// fields we explicitly control per tool actually landed, so a silently
+	// dropped field (as happened historically with description) surfaces as
+	// an error instead of getting stamped into state as if it succeeded,
+	// which otherwise makes the drift permanent and invisible to future
+	// plans (state and desired config end up agreeing on a value AWS never
+	// actually stored).
+	if data.Type.ValueString() == "ORCHESTRATION" {
+		if err := verifyOrchestrationToolsApplied(ctx, conn, data.AssistantId.ValueString(), data.AiAgentId.ValueString(), data.Configuration.ValueString()); err != nil {
+			resp.Diagnostics.AddError("AI Agent tool configuration did not apply as requested", err.Error())
+		}
+	}
 
 	if tags, err := readQConnectTags(ctx, conn, data.AiAgentArn.ValueString()); err == nil {
 		data.Tags = tags
@@ -290,14 +305,26 @@ func (r *QConnectAIAgentResource) Update(ctx context.Context, req resource.Updat
 
 	plan.VisibilityStatus = types.StringValue(string(out.AiAgent.VisibilityStatus))
 
-	// Keep plan.Configuration as-is — see Create() for rationale.
-
-	if err := updateQConnectTags(ctx, conn, state.AiAgentArn.ValueString(), state.Tags, plan.Tags); err != nil {
-		resp.Diagnostics.AddError("Error updating Q in Connect AI Agent tags", err.Error())
-		return
+	// Keep plan.Configuration as-is — see Create() for rationale. Verified
+	// (not just trusted) below — see verifyOrchestrationToolsApplied.
+	if state.Type.ValueString() == "ORCHESTRATION" {
+		if err := verifyOrchestrationToolsApplied(ctx, conn, state.AssistantId.ValueString(), state.AiAgentId.ValueString(), plan.Configuration.ValueString()); err != nil {
+			resp.Diagnostics.AddError("AI Agent tool configuration did not apply as requested", err.Error())
+		}
 	}
 
-	if tags, err := readQConnectTags(ctx, conn, state.AiAgentArn.ValueString()); err == nil {
+	// A tags failure (e.g. missing qconnect:TagResource permission) is kept
+	// non-fatal to state persistence: the agent's configuration/visibility
+	// change above may have genuinely succeeded and been verified, and
+	// returning early here would discard that from state, leaving Terraform
+	// stuck re-attempting (and re-failing on tags) every apply even once the
+	// real, wanted change already landed. plan.Tags falls back to the actual
+	// (unchanged) state.Tags so the pending tag diff stays visible for a
+	// retry, rather than being silently marked as applied.
+	if err := updateQConnectTags(ctx, conn, state.AiAgentArn.ValueString(), state.Tags, plan.Tags); err != nil {
+		resp.Diagnostics.AddError("Error updating Q in Connect AI Agent tags", err.Error())
+		plan.Tags = state.Tags
+	} else if tags, err := readQConnectTags(ctx, conn, state.AiAgentArn.ValueString()); err == nil {
 		plan.Tags = tags
 	}
 
@@ -459,13 +486,14 @@ type orchConfigJSON struct {
 }
 
 type toolConfigJSON struct {
-	ToolId                    string                      `json:"toolId,omitempty"`
-	ToolName                  string                      `json:"toolName"`
-	ToolType                  string                      `json:"toolType"`
-	Instruction               json.RawMessage             `json:"instruction"`
-	OverrideInputValues       json.RawMessage             `json:"overrideInputValues"`
-	InputSchema               json.RawMessage             `json:"inputSchema,omitempty"`
-	UserInteractionConfig     *userInteractionConfigJSON  `json:"userInteractionConfiguration,omitempty"`
+	ToolId                string                     `json:"toolId,omitempty"`
+	ToolName              string                     `json:"toolName"`
+	ToolType              string                     `json:"toolType"`
+	Description           string                     `json:"description,omitempty"`
+	Instruction           json.RawMessage            `json:"instruction"`
+	OverrideInputValues   json.RawMessage            `json:"overrideInputValues"`
+	InputSchema           json.RawMessage            `json:"inputSchema,omitempty"`
+	UserInteractionConfig *userInteractionConfigJSON `json:"userInteractionConfiguration,omitempty"`
 }
 
 type userInteractionConfigJSON struct {
@@ -489,6 +517,132 @@ type constantInputJSON struct {
 // unmarshalOrchestrationConfig converts a configuration JSON string into an
 // OrchestrationAIAgentConfiguration SDK type. It handles the union field
 // ToolOverrideInputValueConfiguration via the intermediate overrideInputJSON type.
+// toolSummary is the subset of a tool's fields this provider explicitly sets
+// per tool. AWS injects other fields for built-in tools regardless of what
+// was requested (inputSchema, outputSchema, annotations, title), so those
+// are deliberately excluded — comparing them would false-positive on every
+// apply, which is exactly why Create/Update don't store the API's read-back
+// configuration in state (see the comment there). This is a narrower "did
+// our write take" check, not a general equality check.
+type toolSummary struct {
+	ToolType    string
+	Description string
+	Instruction string
+	Overrides   string
+}
+
+func summarizeToolConfigurations(tools []qconnecttypes.ToolConfiguration) (map[string]toolSummary, error) {
+	out := map[string]toolSummary{}
+	for _, t := range tools {
+		instrJSON, err := toolInstructionToJSON(t.Instruction)
+		if err != nil {
+			return nil, fmt.Errorf("tool %s: %w", aws.ToString(t.ToolName), err)
+		}
+		ovJSON, err := toolOverrideInputValuesToJSON(t.OverrideInputValues)
+		if err != nil {
+			return nil, fmt.Errorf("tool %s: %w", aws.ToString(t.ToolName), err)
+		}
+
+		// AWS owns description for every MODEL_CONTEXT_PROTOCOL tool -- these
+		// are all backed by an external tool definition (an AWS service like
+		// the built-in Retrieve tool, or a Bedrock AgentCore Gateway target),
+		// and QConnect always mirrors that source's own description,
+		// ignoring whatever the AI Agent configuration says. Confirmed live
+		// against prod-mock for both: the built-in "aws_service__"-prefixed
+		// Retrieve tool, and a customer's own gateway-sourced tool
+		// (sapapi___addresssearchcitystate) -- an UpdateAIAgent that only
+		// changed this field returned success, but the live value never
+		// changed for either, even after several retries. instruction and
+		// overrideInputValues ARE customizable for these tools (also
+		// confirmed live), so only description is excluded here.
+		// RETURN_TO_CONTROL tools have no external schema source and are
+		// fully customer-authored, so their description stays verified.
+		description := aws.ToString(t.Description)
+		if t.ToolType == qconnecttypes.ToolTypeModelContextProtocol {
+			description = ""
+		}
+
+		out[aws.ToString(t.ToolName)] = toolSummary{
+			ToolType:    string(t.ToolType),
+			Description: description,
+			Instruction: string(instrJSON),
+			Overrides:   string(ovJSON),
+		}
+	}
+	return out, nil
+}
+
+// verifyOrchestrationToolsApplied re-reads the AI Agent after a Create/Update
+// and confirms that the fields this provider explicitly controls per tool
+// (description, instruction, overrideInputValues) actually match what was
+// requested. Without this, a silently dropped field (as happened historically
+// with description, before it was added to toolConfigJSON) gets stamped into
+// state as if it succeeded, since Create/Update otherwise trust the plan
+// value unconditionally — making the drift permanent and invisible to future
+// plans, because state and desired config end up agreeing on a value AWS
+// never actually stored.
+func verifyOrchestrationToolsApplied(ctx context.Context, conn *qconnect.Client, assistantId, aiAgentId, intendedConfigJSON string) error {
+	intended, err := unmarshalOrchestrationConfig(intendedConfigJSON)
+	if err != nil {
+		return fmt.Errorf("parsing intended configuration: %w", err)
+	}
+	wantTools, err := summarizeToolConfigurations(intended.ToolConfigurations)
+	if err != nil {
+		return fmt.Errorf("summarizing intended tools: %w", err)
+	}
+
+	// A handful of retries with a short pause: GetAIAgent can lag briefly
+	// behind a just-completed Create/UpdateAIAgent, and a single immediate
+	// read shouldn't be mistaken for the write silently not taking.
+	const maxAttempts = 4
+	const retryDelay = 3 * time.Second
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		out, err := conn.GetAIAgent(ctx, &qconnect.GetAIAgentInput{
+			AssistantId: aws.String(assistantId),
+			AiAgentId:   aws.String(aiAgentId),
+		})
+		if err != nil {
+			return fmt.Errorf("re-reading AI Agent to verify update: %w", err)
+		}
+		member, ok := out.AiAgent.Configuration.(*qconnecttypes.AIAgentConfigurationMemberOrchestrationAIAgentConfiguration)
+		if !ok {
+			return fmt.Errorf("AI Agent configuration is not an orchestration configuration after update")
+		}
+		gotTools, err := summarizeToolConfigurations(member.Value.ToolConfigurations)
+		if err != nil {
+			return fmt.Errorf("summarizing actual tools: %w", err)
+		}
+
+		lastErr = nil
+		for name, want := range wantTools {
+			got, ok := gotTools[name]
+			if !ok {
+				lastErr = fmt.Errorf("tool %q is missing from the AI Agent after the write", name)
+				break
+			}
+			if got != want {
+				lastErr = fmt.Errorf(
+					"tool %q did not apply as requested — the API call succeeded but the live "+
+						"configuration doesn't match (wanted description=%q instruction=%q overrideInputValues=%q; "+
+						"got description=%q instruction=%q overrideInputValues=%q)",
+					name, want.Description, want.Instruction, want.Overrides,
+					got.Description, got.Instruction, got.Overrides,
+				)
+				break
+			}
+		}
+		if lastErr == nil {
+			return nil
+		}
+		if attempt < maxAttempts {
+			time.Sleep(retryDelay)
+		}
+	}
+	return lastErr
+}
+
 func unmarshalOrchestrationConfig(j string) (qconnecttypes.OrchestrationAIAgentConfiguration, error) {
 	var raw orchConfigJSON
 	if err := json.Unmarshal([]byte(j), &raw); err != nil {
@@ -515,6 +669,9 @@ func unmarshalOrchestrationConfig(j string) (qconnecttypes.OrchestrationAIAgentC
 		}
 		if t.ToolId != "" {
 			tool.ToolId = aws.String(t.ToolId)
+		}
+		if t.Description != "" {
+			tool.Description = aws.String(t.Description)
 		}
 
 		instr, err := jsonToToolInstruction(t.Instruction)
@@ -597,6 +754,9 @@ func marshalOrchestrationConfig(cfg qconnecttypes.OrchestrationAIAgentConfigurat
 		}
 		if t.ToolId != nil {
 			tool.ToolId = aws.ToString(t.ToolId)
+		}
+		if t.Description != nil {
+			tool.Description = aws.ToString(t.Description)
 		}
 		if t.InputSchema != nil {
 			var v interface{}

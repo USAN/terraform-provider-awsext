@@ -21,6 +21,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/resourcevalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -92,25 +93,16 @@ func (r *LexV2BotImportResource) Schema(ctx context.Context, req resource.Schema
 			"zip_file_path": schema.StringAttribute{
 				Optional:    true,
 				WriteOnly:   true,
-				Description: "Local path to the zip archive containing the bot definition. Exactly one of zip_file_path or zip_content_base64 must be set. Not stored in state.",
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
-				},
+				Description: "Local path to the zip archive containing the bot definition. Exactly one of zip_file_path or zip_content_base64 must be set. Not stored in state. Changing the archive content re-imports the bot in place (same bot_id) via StartImport with the configured merge_strategy.",
 			},
 			"zip_content_base64": schema.StringAttribute{
 				Optional:    true,
 				WriteOnly:   true,
-				Description: "Base64-encoded zip archive containing the bot definition. Exactly one of zip_file_path or zip_content_base64 must be set. Not stored in state.",
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
-				},
+				Description: "Base64-encoded zip archive containing the bot definition. Exactly one of zip_file_path or zip_content_base64 must be set. Not stored in state. Changing the archive content re-imports the bot in place (same bot_id) via StartImport with the configured merge_strategy.",
 			},
 			"zip_sha256": schema.StringAttribute{
 				Optional:    true,
-				Description: "SHA256 checksum of the zip archive. Stored in state; changing this value triggers replacement.",
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
-				},
+				Description: "SHA256 checksum of the zip archive. Stored in state; changing this value re-imports the bot in place (same bot_id) rather than replacing it.",
 			},
 			"role_arn": schema.StringAttribute{
 				Required:    true,
@@ -145,10 +137,9 @@ func (r *LexV2BotImportResource) Schema(ctx context.Context, req resource.Schema
 			},
 			"import_id": schema.StringAttribute{
 				Computed:    true,
-				Description: "The import job identifier returned by CreateUploadUrl.",
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
-				},
+				Description: "The import job identifier returned by CreateUploadUrl. Not marked " +
+					"UseStateForUnknown: Update runs a new import job each time the archive changes, " +
+					"so the plan must show it as known-after-apply rather than predicting it stays put.",
 			},
 			"tags": schema.MapAttribute{
 				Optional:    true,
@@ -250,84 +241,13 @@ func (r *LexV2BotImportResource) Create(ctx context.Context, req resource.Create
 		}
 	}
 
-	// Step 3: CreateUploadUrl.
-	uploadOut, err := lexClient.CreateUploadUrl(ctx, &lexmodelsv2.CreateUploadUrlInput{})
-	if err != nil {
-		resp.Diagnostics.AddError("Error creating LexV2 upload URL", err.Error())
+	importID, botID, diags := r.runImport(ctx, lexClient, data.ImportResourceSpecification.ValueString(), data.MergeStrategy.ValueString(), zipFilePath, zipContentBase64)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
 		return
 	}
-	importID := aws.ToString(uploadOut.ImportId)
-	uploadURL := aws.ToString(uploadOut.UploadUrl)
 	data.ImportID = types.StringValue(importID)
-
-	// Step 4: Read zip bytes.
-	var zipBytes []byte
-	if !zipFilePath.IsNull() && !zipFilePath.IsUnknown() && zipFilePath.ValueString() != "" {
-		zipBytes, err = os.ReadFile(zipFilePath.ValueString())
-		if err != nil {
-			resp.Diagnostics.AddError("Error reading zip file", fmt.Sprintf("Could not read %s: %s", zipFilePath.ValueString(), err))
-			return
-		}
-	} else {
-		zipBytes, err = base64.StdEncoding.DecodeString(zipContentBase64.ValueString())
-		if err != nil {
-			resp.Diagnostics.AddError("Error decoding zip_content_base64", err.Error())
-			return
-		}
-	}
-
-	// Step 5: HTTP PUT zip bytes to UploadUrl.
-	putReq, err := http.NewRequestWithContext(ctx, http.MethodPut, uploadURL, bytes.NewReader(zipBytes))
-	if err != nil {
-		resp.Diagnostics.AddError("Error creating upload HTTP request", err.Error())
-		return
-	}
-	putReq.Header.Set("Content-Type", "application/zip")
-	httpClient := &http.Client{Timeout: 15 * time.Minute}
-	putResp, err := httpClient.Do(putReq)
-	if err != nil {
-		resp.Diagnostics.AddError("Error uploading zip to S3", err.Error())
-		return
-	}
-	defer putResp.Body.Close()
-	if putResp.StatusCode < 200 || putResp.StatusCode >= 300 {
-		body, _ := io.ReadAll(putResp.Body)
-		resp.Diagnostics.AddError("Error uploading zip to S3", fmt.Sprintf("HTTP %d: %s", putResp.StatusCode, string(body)))
-		return
-	}
-
-	// Step 6: StartImport.
-	var resourceSpec lextypes.ImportResourceSpecification
-	if err := json.Unmarshal([]byte(data.ImportResourceSpecification.ValueString()), &resourceSpec); err != nil {
-		resp.Diagnostics.AddError("Error decoding import_resource_specification", err.Error())
-		return
-	}
-
-	_, err = lexClient.StartImport(ctx, &lexmodelsv2.StartImportInput{
-		ImportId:              aws.String(importID),
-		ResourceSpecification: &resourceSpec,
-		MergeStrategy:         lextypes.MergeStrategy(data.MergeStrategy.ValueString()),
-	})
-	if err != nil {
-		resp.Diagnostics.AddError("Error starting LexV2 import", err.Error())
-		return
-	}
-
-	// Step 7: Poll DescribeImport until Completed or Failed.
-	botID, finalStatus, failReasons, pollErr := r.pollImport(ctx, lexClient, importID)
-	if pollErr != nil {
-		resp.Diagnostics.AddError("Error polling LexV2 import status", pollErr.Error())
-		return
-	}
-	data.ImportStatus = types.StringValue(string(finalStatus))
-
-	if finalStatus != lextypes.ImportStatusCompleted {
-		resp.Diagnostics.AddError(
-			"LexV2 import failed",
-			fmt.Sprintf("Import %s ended with status %s. Reasons: %v", importID, finalStatus, failReasons),
-		)
-		return
-	}
+	data.ImportStatus = types.StringValue(string(lextypes.ImportStatusCompleted))
 
 	// Step 8: Set bot_id.
 	data.BotID = types.StringValue(botID)
@@ -413,30 +333,58 @@ func (r *LexV2BotImportResource) Read(ctx context.Context, req resource.ReadRequ
 }
 
 // -------------------------------------------------------------------
-// Update (tags only)
+// Update
 // -------------------------------------------------------------------
 
+// Update re-imports the bot content when the zip archive changed, and/or
+// updates tags. Because import_resource_specification's botName still
+// matches the existing bot, StartImport with the configured merge_strategy
+// merges into that same bot (bot_id/bot_arn are unchanged) instead of
+// creating a new one — so downstream resources (bot version, alias) update
+// in place rather than being replaced.
 func (r *LexV2BotImportResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var plan, state LexV2BotImportResourceModel
+	var zipFilePath types.String
+	var zipContentBase64 types.String
+
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("zip_file_path"), &zipFilePath)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("zip_content_base64"), &zipContentBase64)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
 	lexClient := lexmodelsv2.NewFromConfig(r.config)
 
-	if err := updateLexV2Tags(ctx, lexClient, state.BotArn.ValueString(), state.Tags, plan.Tags); err != nil {
+	if plan.ZipSHA256.ValueString() != state.ZipSHA256.ValueString() {
+		importID, botID, diags := r.runImport(ctx, lexClient, plan.ImportResourceSpecification.ValueString(), plan.MergeStrategy.ValueString(), zipFilePath, zipContentBase64)
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		plan.ImportID = types.StringValue(importID)
+		plan.ImportStatus = types.StringValue(string(lextypes.ImportStatusCompleted))
+		plan.BotID = types.StringValue(botID)
+		botArn, arnErr := r.buildBotArn(ctx, botID)
+		if arnErr != nil {
+			resp.Diagnostics.AddError("Error constructing bot ARN", arnErr.Error())
+			return
+		}
+		plan.BotArn = types.StringValue(botArn)
+	} else {
+		plan.BotID = state.BotID
+		plan.BotArn = state.BotArn
+		plan.ImportStatus = state.ImportStatus
+		plan.ImportID = state.ImportID
+	}
+
+	if err := updateLexV2Tags(ctx, lexClient, plan.BotArn.ValueString(), state.Tags, plan.Tags); err != nil {
 		resp.Diagnostics.AddError("Error updating LexV2 bot tags", err.Error())
 		return
 	}
 
-	plan.BotID = state.BotID
-	plan.BotArn = state.BotArn
-	plan.ImportStatus = state.ImportStatus
-	plan.ImportID = state.ImportID
-
-	tags, tagsErr := readLexV2Tags(ctx, lexClient, state.BotArn.ValueString())
+	tags, tagsErr := readLexV2Tags(ctx, lexClient, plan.BotArn.ValueString())
 	if tagsErr != nil {
 		resp.Diagnostics.AddError("Error reading LexV2 bot tags", tagsErr.Error())
 		return
@@ -507,6 +455,85 @@ func (r *LexV2BotImportResource) ImportState(ctx context.Context, req resource.I
 // -------------------------------------------------------------------
 // Helpers
 // -------------------------------------------------------------------
+
+// runImport uploads the zip archive and runs StartImport/DescribeImport to completion.
+// It returns the import ID and the resulting bot ID (unchanged from the existing bot
+// when import_resource_specification's botName matches one already in the account,
+// since StartImport merges into that bot per merge_strategy rather than creating a new one).
+func (r *LexV2BotImportResource) runImport(ctx context.Context, lexClient *lexmodelsv2.Client, importResourceSpecJSON, mergeStrategy string, zipFilePath, zipContentBase64 types.String) (importID string, botID string, diags diag.Diagnostics) {
+	uploadOut, err := lexClient.CreateUploadUrl(ctx, &lexmodelsv2.CreateUploadUrlInput{})
+	if err != nil {
+		diags.AddError("Error creating LexV2 upload URL", err.Error())
+		return "", "", diags
+	}
+	importID = aws.ToString(uploadOut.ImportId)
+	uploadURL := aws.ToString(uploadOut.UploadUrl)
+
+	var zipBytes []byte
+	if !zipFilePath.IsNull() && !zipFilePath.IsUnknown() && zipFilePath.ValueString() != "" {
+		zipBytes, err = os.ReadFile(zipFilePath.ValueString())
+		if err != nil {
+			diags.AddError("Error reading zip file", fmt.Sprintf("Could not read %s: %s", zipFilePath.ValueString(), err))
+			return "", "", diags
+		}
+	} else {
+		zipBytes, err = base64.StdEncoding.DecodeString(zipContentBase64.ValueString())
+		if err != nil {
+			diags.AddError("Error decoding zip_content_base64", err.Error())
+			return "", "", diags
+		}
+	}
+
+	putReq, err := http.NewRequestWithContext(ctx, http.MethodPut, uploadURL, bytes.NewReader(zipBytes))
+	if err != nil {
+		diags.AddError("Error creating upload HTTP request", err.Error())
+		return "", "", diags
+	}
+	putReq.Header.Set("Content-Type", "application/zip")
+	httpClient := &http.Client{Timeout: 15 * time.Minute}
+	putResp, err := httpClient.Do(putReq)
+	if err != nil {
+		diags.AddError("Error uploading zip to S3", err.Error())
+		return "", "", diags
+	}
+	defer putResp.Body.Close()
+	if putResp.StatusCode < 200 || putResp.StatusCode >= 300 {
+		body, _ := io.ReadAll(putResp.Body)
+		diags.AddError("Error uploading zip to S3", fmt.Sprintf("HTTP %d: %s", putResp.StatusCode, string(body)))
+		return "", "", diags
+	}
+
+	var resourceSpec lextypes.ImportResourceSpecification
+	if err := json.Unmarshal([]byte(importResourceSpecJSON), &resourceSpec); err != nil {
+		diags.AddError("Error decoding import_resource_specification", err.Error())
+		return "", "", diags
+	}
+
+	_, err = lexClient.StartImport(ctx, &lexmodelsv2.StartImportInput{
+		ImportId:              aws.String(importID),
+		ResourceSpecification: &resourceSpec,
+		MergeStrategy:         lextypes.MergeStrategy(mergeStrategy),
+	})
+	if err != nil {
+		diags.AddError("Error starting LexV2 import", err.Error())
+		return "", "", diags
+	}
+
+	botID, finalStatus, failReasons, pollErr := r.pollImport(ctx, lexClient, importID)
+	if pollErr != nil {
+		diags.AddError("Error polling LexV2 import status", pollErr.Error())
+		return "", "", diags
+	}
+	if finalStatus != lextypes.ImportStatusCompleted {
+		diags.AddError(
+			"LexV2 import failed",
+			fmt.Sprintf("Import %s ended with status %s. Reasons: %v", importID, finalStatus, failReasons),
+		)
+		return "", "", diags
+	}
+
+	return importID, botID, diags
+}
 
 // pollImport polls DescribeImport until the status is Completed or Failed (or timeout).
 func (r *LexV2BotImportResource) pollImport(ctx context.Context, client *lexmodelsv2.Client, importID string) (botID string, status lextypes.ImportStatus, failReasons []string, err error) {

@@ -45,6 +45,40 @@ func resourceNotFoundError() error {
 
 var _ smithy.APIError = &appintegrationstypes.ResourceNotFoundException{}
 
+func TestFlattenIframeConfig_NilWhenAPIReturnsNil(t *testing.T) {
+	if got := flattenIframeConfig(context.Background(), nil); got != nil {
+		t.Fatalf("expected nil, got %+v", got)
+	}
+}
+
+func TestFlattenIframeConfig_NilWhenAllowAndSandboxBothEmpty(t *testing.T) {
+	// Reproduces the permadiff: GetApplication returns a non-nil IframeConfig
+	// with empty Allow/Sandbox for an application whose config never set
+	// iframe_config. This must flatten to nil so Read matches the plan's
+	// null value instead of forcing an update every apply.
+	got := flattenIframeConfig(context.Background(), &appintegrationstypes.IframeConfig{})
+	if got != nil {
+		t.Fatalf("expected nil, got %+v", got)
+	}
+}
+
+func TestFlattenIframeConfig_PopulatedWhenAllowOrSandboxSet(t *testing.T) {
+	got := flattenIframeConfig(context.Background(), &appintegrationstypes.IframeConfig{
+		Allow: []string{"microphone"},
+	})
+	if got == nil {
+		t.Fatal("expected non-nil result")
+	}
+	var allow []string
+	got.Allow.ElementsAs(context.Background(), &allow, false)
+	if len(allow) != 1 || allow[0] != "microphone" {
+		t.Fatalf("expected Allow=[microphone], got %+v", allow)
+	}
+	if !got.Sandbox.IsNull() {
+		t.Fatalf("expected Sandbox to be null, got %+v", got.Sandbox)
+	}
+}
+
 func TestWaitForNoApplicationAssociations_EmptyImmediately(t *testing.T) {
 	lister := &fakeAssociationLister{responses: []fakeAssociationResponse{{}}}
 

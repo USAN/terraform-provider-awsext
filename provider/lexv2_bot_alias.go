@@ -372,6 +372,16 @@ func (r *LexV2BotAliasResource) Update(ctx context.Context, req resource.UpdateR
 		return
 	}
 
+	// Wait for the alias to reach Available before returning. Without this, a
+	// caller that immediately destroys the bot version this alias used to
+	// point at (e.g. a create_before_destroy replacement) can race Lex's
+	// internal propagation of the re-point and hit a spurious "version still
+	// in use" ConflictException on the delete.
+	if err := r.pollUntilAvailable(ctx, client, state.BotID.ValueString(), state.BotAliasID.ValueString()); err != nil {
+		resp.Diagnostics.AddError("Error waiting for bot alias update to propagate", err.Error())
+		return
+	}
+
 	if err := updateLexV2Tags(ctx, client, state.Arn.ValueString(), state.Tags, plan.Tags); err != nil {
 		resp.Diagnostics.AddError("Error updating bot alias tags", err.Error())
 		return
