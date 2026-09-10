@@ -80,6 +80,38 @@ type AppIntegrationsIframeConfigModel struct {
 	Sandbox types.List `tfsdk:"sandbox"`
 }
 
+// flattenIframeConfig converts a GetApplication response's IframeConfig into
+// the resource model.
+//
+// GetApplication always returns a non-nil IframeConfig, even for an
+// application that was created with none configured — in that case Allow and
+// Sandbox both come back empty. Treating that the same as a nil IframeConfig
+// keeps Read's result consistent with an unset iframe_config in config;
+// otherwise Read would write a non-null object into state opposite the null
+// the plan computes from config, producing a permanent
+// iframe_config = {} -> null diff on every plan.
+func flattenIframeConfig(ctx context.Context, ifc *appintegrationstypes.IframeConfig) *AppIntegrationsIframeConfigModel {
+	if ifc == nil || (len(ifc.Allow) == 0 && len(ifc.Sandbox) == 0) {
+		return nil
+	}
+
+	model := &AppIntegrationsIframeConfigModel{
+		Allow:   types.ListNull(types.StringType),
+		Sandbox: types.ListNull(types.StringType),
+	}
+	if len(ifc.Allow) > 0 {
+		if allow, diags := types.ListValueFrom(ctx, types.StringType, ifc.Allow); !diags.HasError() {
+			model.Allow = allow
+		}
+	}
+	if len(ifc.Sandbox) > 0 {
+		if sandbox, diags := types.ListValueFrom(ctx, types.StringType, ifc.Sandbox); !diags.HasError() {
+			model.Sandbox = sandbox
+		}
+	}
+	return model
+}
+
 // -------------------------------------------------------------------
 // Metadata / Schema
 // -------------------------------------------------------------------
@@ -511,28 +543,7 @@ func (r *AppIntegrationsApplicationResource) Read(ctx context.Context, req resou
 	}
 
 	// IframeConfig
-	if out.IframeConfig != nil {
-		ifc := &AppIntegrationsIframeConfigModel{}
-		if len(out.IframeConfig.Allow) > 0 {
-			allow, diags := types.ListValueFrom(ctx, types.StringType, out.IframeConfig.Allow)
-			if !diags.HasError() {
-				ifc.Allow = allow
-			}
-		} else {
-			ifc.Allow = types.ListNull(types.StringType)
-		}
-		if len(out.IframeConfig.Sandbox) > 0 {
-			sandbox, diags := types.ListValueFrom(ctx, types.StringType, out.IframeConfig.Sandbox)
-			if !diags.HasError() {
-				ifc.Sandbox = sandbox
-			}
-		} else {
-			ifc.Sandbox = types.ListNull(types.StringType)
-		}
-		data.IframeConfig = ifc
-	} else {
-		data.IframeConfig = nil
-	}
+	data.IframeConfig = flattenIframeConfig(ctx, out.IframeConfig)
 
 	if tags, err := readAppIntegrationsTags(ctx, conn, data.ApplicationArn.ValueString()); err == nil {
 		data.Tags = tags
