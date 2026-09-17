@@ -247,6 +247,14 @@ func (r *ConnectSecurityProfileAssociationResource) Read(ctx context.Context, re
 	for _, scopeArn := range securityProfileAssociationScopes(data.EntityArn.ValueString()) {
 		associated, err := r.scopeHasSecurityProfile(ctx, conn, data.InstanceID.ValueString(), data.EntityType.ValueString(), scopeArn, data.SecurityProfileID.ValueString())
 		if err != nil {
+			if isResourceNotFound(err) || isNoWisdomConnector(err) {
+				// The entity itself (e.g. the AI Agent) is gone — for example,
+				// deleted out-of-band in the console. There is nothing to
+				// associate with, so drop the resource from state and let the
+				// next apply recreate it once the entity exists again.
+				resp.State.RemoveResource(ctx)
+				return
+			}
 			resp.Diagnostics.AddError(
 				"Error reading Connect Security Profile Association",
 				fmt.Sprintf("Could not list entity security profiles for %s: %s", scopeArn, err),
