@@ -9,6 +9,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/connect"
 	conntypes "github.com/aws/aws-sdk-go-v2/service/connect/types"
+	"github.com/aws/aws-sdk-go-v2/service/qconnect"
+	qconnecttypes "github.com/aws/aws-sdk-go-v2/service/qconnect/types"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -94,6 +96,81 @@ func disassociateSecurityProfilesFromEntity(ctx context.Context, conn *connect.C
 	return nil
 }
 
+// parseAIAgentArn extracts the assistant ID and AI Agent ID from an AI Agent
+// ARN of the form "arn:aws:wisdom:<region>:<account>:ai-agent/<assistant_id>/<agent_id>",
+// with or without a trailing ":<version>" or ":$LATEST" qualifier.
+func parseAIAgentArn(entityArn string) (assistantID, agentID string, ok bool) {
+	_, resourcePart, found := strings.Cut(entityArn, ":ai-agent/")
+	if !found {
+		return "", "", false
+	}
+	resourcePart, _, _ = strings.Cut(resourcePart, ":")
+	assistantID, agentID, found = strings.Cut(resourcePart, "/")
+	if !found || assistantID == "" || agentID == "" || strings.Contains(agentID, "/") {
+		return "", "", false
+	}
+	return assistantID, agentID, true
+}
+
+// clearSecurityProfileFromAgentVersions removes securityProfileID from every
+// published (numbered) version of the AI Agent named by entityArn.
+//
+// Amazon Connect tracks the association per version ARN ("<agent arn>:<n>"),
+// and a version's association is not removed when the version is deleted. The
+// profile then stays "in use" and DeleteSecurityProfile fails with
+// ResourceInUseException naming those versions. Clearing the versions here,
+// while the agent still exists and its versions can be listed, lets the
+// profile be deleted afterwards. Versions that are not associated are skipped.
+func (r *ConnectSecurityProfileAssociationResource) clearSecurityProfileFromAgentVersions(ctx context.Context, conn *connect.Client, instanceID, entityType, entityArn, securityProfileID string) error {
+	assistantID, agentID, ok := parseAIAgentArn(entityArn)
+	if !ok {
+		return nil
+	}
+
+	paginator := qconnect.NewListAIAgentVersionsPaginator(qconnect.NewFromConfig(r.config), &qconnect.ListAIAgentVersionsInput{
+		AssistantId: aws.String(assistantID),
+		AiAgentId:   aws.String(agentID),
+		Origin:      qconnecttypes.OriginCustomer,
+	})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			var nf *qconnecttypes.ResourceNotFoundException
+			if errors.As(err, &nf) {
+				// The agent is already gone: its versions cannot be listed.
+				return nil
+			}
+			return fmt.Errorf("listing AI Agent versions for %s: %w", entityArn, err)
+		}
+		for _, v := range page.AiAgentVersionSummaries {
+			if v.VersionNumber == nil {
+				continue
+			}
+			versionArn := fmt.Sprintf("%s:%d", entityArn, *v.VersionNumber)
+			associated, err := r.scopeHasSecurityProfile(ctx, conn, instanceID, entityType, versionArn, securityProfileID)
+			if err != nil {
+				if isResourceNotFound(err) || isNoWisdomConnector(err) {
+					continue
+				}
+				return fmt.Errorf("listing security profiles for %s: %w", versionArn, err)
+			}
+			if !associated {
+				continue
+			}
+			_, err = conn.DisassociateSecurityProfiles(ctx, &connect.DisassociateSecurityProfilesInput{
+				InstanceId:       aws.String(instanceID),
+				EntityArn:        aws.String(versionArn),
+				EntityType:       conntypes.EntityType(entityType),
+				SecurityProfiles: []conntypes.SecurityProfileItem{{Id: aws.String(securityProfileID)}},
+			})
+			if err != nil && !isResourceNotFound(err) {
+				return fmt.Errorf("disassociating security profile %s from %s: %w", securityProfileID, versionArn, err)
+			}
+		}
+	}
+	return nil
+}
+
 func isResourceConflict(err error) bool {
 	var confErr *conntypes.ResourceConflictException
 	return errors.As(err, &confErr)
@@ -132,7 +209,9 @@ func (r *ConnectSecurityProfileAssociationResource) Schema(ctx context.Context, 
 			"independently: the base ARN, `:$LATEST`, and `:$SAVED`. Fills the gap left by the official " +
 			"`aws_connect_security_profile` resource and by `awsext_connect_security_profile`, neither of which " +
 			"attaches the profile to anything — an AI Agent otherwise fails every MCP tool call with " +
-			"\"Insufficient\" permission.",
+			"\"Insufficient\" permission. On destroy it also removes the profile from every published " +
+			"(numbered) version of the agent, which Connect tracks separately and which otherwise block " +
+			"deleting the profile.",
 
 		Attributes: map[string]schema.Attribute{
 			"instance_id": schema.StringAttribute{
@@ -346,6 +425,18 @@ func (r *ConnectSecurityProfileAssociationResource) Delete(ctx context.Context, 
 			)
 			return
 		}
+	}
+
+	// Published agent versions carry their own association that the three
+	// scopes above do not cover; leaving them blocks deleting the profile.
+	if err := r.clearSecurityProfileFromAgentVersions(
+		ctx, conn, data.InstanceID.ValueString(), data.EntityType.ValueString(),
+		data.EntityArn.ValueString(), data.SecurityProfileID.ValueString(),
+	); err != nil {
+		resp.Diagnostics.AddError(
+			"Error disassociating Connect Security Profile from AI Agent versions",
+			fmt.Sprintf("Could not clear security profile %s from the versions of %s: %s", data.SecurityProfileID.ValueString(), data.EntityArn.ValueString(), err),
+		)
 	}
 }
 

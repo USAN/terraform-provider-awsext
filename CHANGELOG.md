@@ -2,6 +2,12 @@
 
 All notable changes to this provider are documented here. Versions correspond to git tags.
 
+## Unreleased
+
+### Fixed
+
+- `awsext_connect_security_profile_association`: `Delete` now also removes the profile from every published (numbered) version of the AI Agent, not just the base/`$LATEST`/`$SAVED` scopes. Connect keeps a version's association after the version is deleted, so the profile stayed "in use" and `DeleteSecurityProfile` failed with `ResourceInUseException` on `terraform destroy`. Versions are listed while the agent still exists (the association is destroyed before the agent), and only versions that actually hold the profile are touched. Associations left behind on versions that were already deleted cannot be listed and must still be cleared with `aws connect disassociate-security-profiles`.
+
 ## v1.6.2
 
 ### Fixed

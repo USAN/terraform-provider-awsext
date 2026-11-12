@@ -58,3 +58,30 @@ func TestIsResourceNotFound(t *testing.T) {
 		t.Error("expected isResourceNotFound to be false for nil")
 	}
 }
+
+func TestParseAIAgentArn(t *testing.T) {
+	const base = "arn:aws:wisdom:us-east-1:111111111111:ai-agent/assistant-1/agent-1"
+	tests := []struct {
+		name          string
+		arn           string
+		wantAssistant string
+		wantAgent     string
+		wantOK        bool
+	}{
+		{"base arn", base, "assistant-1", "agent-1", true},
+		{"version qualifier", base + ":6", "assistant-1", "agent-1", true},
+		{"latest qualifier", base + ":$LATEST", "assistant-1", "agent-1", true},
+		{"not an agent arn", "arn:aws:wisdom:us-east-1:111111111111:assistant/assistant-1", "", "", false},
+		{"missing agent id", "arn:aws:wisdom:us-east-1:111111111111:ai-agent/assistant-1", "", "", false},
+		{"empty", "", "", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assistant, agent, ok := parseAIAgentArn(tt.arn)
+			if assistant != tt.wantAssistant || agent != tt.wantAgent || ok != tt.wantOK {
+				t.Errorf("parseAIAgentArn(%q) = (%q, %q, %v), want (%q, %q, %v)",
+					tt.arn, assistant, agent, ok, tt.wantAssistant, tt.wantAgent, tt.wantOK)
+			}
+		})
+	}
+}
