@@ -17,6 +17,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/mapplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -54,6 +55,7 @@ type QConnectAIAgentVersionResourceModel struct {
 	VersionNumber         types.Int64  `tfsdk:"version_number"`
 	AIAgentARNWithVersion types.String `tfsdk:"ai_agent_arn_with_version"`
 	AIAgentIdWithVersion  types.String `tfsdk:"ai_agent_id_with_version"`
+	Triggers              types.Map    `tfsdk:"triggers"`
 }
 
 // Metadata
@@ -87,6 +89,12 @@ func (r *QConnectAIAgentVersionResource) Schema(ctx context.Context, req resourc
 				Optional:      true,
 				Description:   "Amazon Connect instance ID. When set, Delete disassociates this version's numbered ARN from any Connect Security Profile still holding it (AssociateSecurityProfiles fans a base entity_arn out to 3 scopes, none of which is a numbered version — AWS never disassociates the numbered scope itself when the version is deleted, which otherwise permanently blocks DeleteSecurityProfile). Omit if this AI Agent's security profile associations aren't managed via awsext_connect_security_profile_association.",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
+			},
+			"triggers": schema.MapAttribute{
+				Optional:      true,
+				ElementType:   types.StringType,
+				Description:   triggersDescription,
+				PlanModifiers: []planmodifier.Map{mapplanmodifier.RequiresReplace()},
 			},
 			"version_number": schema.Int64Attribute{
 				Computed:      true,
