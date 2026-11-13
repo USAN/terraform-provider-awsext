@@ -172,6 +172,7 @@ The provider accepts standard AWS credential settings; all are optional and fall
 | `secret_key` | Static secret key                                                 |
 | `token`      | Session token for temporary credentials                           |
 | `role_arn`   | IAM role to assume via STS                                        |
+| `session_name` | Session name for the assumed role (needs `role_arn`; default is the SDK-generated name) |
 
 Never commit static credentials; prefer SSO profiles or assumed roles.
 
