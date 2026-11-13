@@ -41,12 +41,13 @@ type AwsExtProvider struct {
 
 // AwsExtProviderModel describes the provider data model.
 type AwsExtProviderModel struct {
-	AccessKey types.String `tfsdk:"access_key"`
-	SecretKey types.String `tfsdk:"secret_key"`
-	Token     types.String `tfsdk:"token"`
-	Region    types.String `tfsdk:"region"`
-	Profile   types.String `tfsdk:"profile"`
-	RoleArn   types.String `tfsdk:"role_arn"`
+	AccessKey   types.String `tfsdk:"access_key"`
+	SecretKey   types.String `tfsdk:"secret_key"`
+	Token       types.String `tfsdk:"token"`
+	Region      types.String `tfsdk:"region"`
+	Profile     types.String `tfsdk:"profile"`
+	RoleArn     types.String `tfsdk:"role_arn"`
+	SessionName types.String `tfsdk:"session_name"`
 }
 
 func (p *AwsExtProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
@@ -79,6 +80,10 @@ func (p *AwsExtProvider) Schema(ctx context.Context, req provider.SchemaRequest,
 			},
 			"role_arn": schema.StringAttribute{
 				Description: "AWS role ARN",
+				Optional:    true,
+			},
+			"session_name": schema.StringAttribute{
+				Description: "Session name used when assuming role_arn, for CloudTrail traceability. Ignored when role_arn is not set. Defaults to the AWS SDK's generated name.",
 				Optional:    true,
 			},
 		},
@@ -121,7 +126,11 @@ func (p *AwsExtProvider) Configure(ctx context.Context, req provider.ConfigureRe
 
 	if data.RoleArn.ValueString() != "" {
 		stsClient := sts.NewFromConfig(cfg)
-		creds := stscreds.NewAssumeRoleProvider(stsClient, data.RoleArn.ValueString())
+		creds := stscreds.NewAssumeRoleProvider(stsClient, data.RoleArn.ValueString(), func(o *stscreds.AssumeRoleOptions) {
+			if data.SessionName.ValueString() != "" {
+				o.RoleSessionName = data.SessionName.ValueString()
+			}
+		})
 		cfg.Credentials = aws.NewCredentialsCache(creds)
 	}
 

@@ -18,6 +18,7 @@ provider "awsext" {
   profile    = "your-profile"
   role_arn   = "your-role-arn"
   secret_key = "your-secret-key"
+  session_name = "your-session-name"
   token      = "your-token"
 }
 ```
@@ -32,4 +33,5 @@ provider "awsext" {
 - `region` (String) AWS region
 - `role_arn` (String) AWS role ARN
 - `secret_key` (String) AWS secret key
+- `session_name` (String) Session name used when assuming role_arn, for CloudTrail traceability. Ignored when role_arn is not set. Defaults to the AWS SDK's generated name.
 - `token` (String) AWS session token

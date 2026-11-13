@@ -94,9 +94,8 @@ func (r *QConnectAIPromptResource) Schema(ctx context.Context, req resource.Sche
 				},
 			},
 			"model_id": schema.StringAttribute{
-				Required:      true,
-				Description:   "Identifier of the model used for this AI Prompt (e.g. anthropic.claude-3-5-sonnet-20240620-v1:0).",
-				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
+				Required:    true,
+				Description: "Identifier of the model used for this AI Prompt (e.g. anthropic.claude-3-5-sonnet-20240620-v1:0). Updated in place.",
 			},
 			"template_type": schema.StringAttribute{
 				Required:      true,
@@ -284,6 +283,7 @@ func (r *QConnectAIPromptResource) Update(ctx context.Context, req resource.Upda
 		AiPromptId:            aws.String(state.AiPromptId.ValueString()),
 		VisibilityStatus:      visibilityStatus,
 		TemplateConfiguration: templateConfig,
+		ModelId:               aws.String(plan.ModelId.ValueString()),
 	}
 
 	out, err := conn.UpdateAIPrompt(ctx, in)

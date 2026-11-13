@@ -38,7 +38,7 @@ resource "awsext_qconnect_ai_prompt" "example" {
 
 - `api_format` (String) API format for the AI Prompt. One of ANTHROPIC_CLAUDE_MESSAGES, ANTHROPIC_CLAUDE_TEXT_COMPLETIONS, MESSAGES, TEXT_COMPLETIONS. The ANTHROPIC_CLAUDE_* variants are deprecated; prefer MESSAGES or TEXT_COMPLETIONS.
 - `assistant_id` (String) Identifier of the parent Amazon Q in Connect assistant.
-- `model_id` (String) Identifier of the model used for this AI Prompt (e.g. anthropic.claude-3-5-sonnet-20240620-v1:0).
+- `model_id` (String) Identifier of the model used for this AI Prompt (e.g. anthropic.claude-3-5-sonnet-20240620-v1:0). Updated in place.
 - `name` (String) Name of the AI Prompt.
 - `template_configuration` (String) YAML text for the AI Prompt template (passed verbatim to the qconnect API). The `NormalizeJSONString` plan modifier suppresses cosmetic whitespace-only diffs if the content happens to be JSON.
 - `template_type` (String) Type of the prompt template. Currently the only supported value is TEXT.
