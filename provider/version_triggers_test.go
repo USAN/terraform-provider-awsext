@@ -14,6 +14,7 @@ func TestVersionResourcesForceReplacementOnTriggers(t *testing.T) {
 	cases := map[string]resource.Resource{
 		"prompt version":    NewQConnectAIPromptVersionResource(),
 		"guardrail version": NewQConnectAIGuardrailVersionResource(),
+		"agent version":     NewQConnectAIAgentVersionResource(),
 	}
 	for name, res := range cases {
 		t.Run(name, func(t *testing.T) {
