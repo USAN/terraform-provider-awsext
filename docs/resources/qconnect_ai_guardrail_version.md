@@ -31,6 +31,8 @@ resource "awsext_qconnect_ai_guardrail_version" "v" {
 
 - `modified_time_seconds` (Number) Unix epoch seconds of the last-known modification time of the guardrail. When set, the API rejects the version create if the guardrail has been modified more recently, preventing accidental version creation on stale configs.
 
+- `triggers` (Map of String) Arbitrary map of values that, when changed, forces a new version to be published. Typically a hash of the content being versioned. The value is saved to state only after the version was created successfully, so a failed create is retried on the next apply.
+
 ### Read-Only
 
 - `guardrail_arn_with_version` (String) ARN of the AI Guardrail qualified with the version number (<ai_guardrail_arn>:<version_number>). Use this in AI agent configurations that require a specific guardrail version.

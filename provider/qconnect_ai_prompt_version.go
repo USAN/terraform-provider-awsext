@@ -16,6 +16,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/mapplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -38,6 +39,7 @@ type QConnectAIPromptVersionResourceModel struct {
 	VersionNumber         types.Int64  `tfsdk:"version_number"`
 	PromptArnWithVersion  types.String `tfsdk:"prompt_arn_with_version"`
 	AiPromptIdWithVersion types.String `tfsdk:"ai_prompt_id_with_version"`
+	Triggers              types.Map    `tfsdk:"triggers"`
 }
 
 // Metadata
@@ -66,6 +68,12 @@ func (r *QConnectAIPromptVersionResource) Schema(ctx context.Context, req resour
 				Optional:      true,
 				Description:   "Unix epoch seconds of the last-known modification time of the prompt. When set, the API rejects the version create if the prompt has been modified more recently, preventing accidental version creation on stale configs.",
 				PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()},
+			},
+			"triggers": schema.MapAttribute{
+				Optional:      true,
+				ElementType:   types.StringType,
+				Description:   triggersDescription,
+				PlanModifiers: []planmodifier.Map{mapplanmodifier.RequiresReplace()},
 			},
 			"version_number": schema.Int64Attribute{
 				Computed:      true,
