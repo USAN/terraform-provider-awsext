@@ -8,6 +8,8 @@ All notable changes to this provider are documented here. Versions correspond to
 
 - Provider: new optional `session_name` attribute, used as the STS role session name when `role_arn` is set. Lets callers satisfy the "session names must be propagated to assumed roles" traceability rule (USAN Terraform linter P001). When unset, behavior is unchanged (the AWS SDK generates the session name).
 
+- `awsext_qconnect_ai_agent`: new optional `refresh_triggers` map. Changing a value updates the agent in place (`UpdateAIAgent`) even when `configuration` is unchanged, which makes Q in Connect re-read the tool definitions of `MODEL_CONTEXT_PROTOCOL` tools. A gateway tool schema change (for example a renamed input parameter) does not alter the agent `configuration`, so the agent kept the old definitions and publishing new versions only copied them. Tested on a live agent: after the update the agent and its new version held the renamed parameter. It never replaces the agent.
+
 ### Fixed
 
 - `awsext_connect_security_profile_association`: `Delete` now also removes the profile from every published (numbered) version of the AI Agent, not just the base/`$LATEST`/`$SAVED` scopes. Connect keeps a version's association after the version is deleted, so the profile stayed "in use" and `DeleteSecurityProfile` failed with `ResourceInUseException` on `terraform destroy`. Versions are listed while the agent still exists (the association is destroyed before the agent), and only versions that actually hold the profile are touched. Associations left behind on versions that were already deleted cannot be listed and must still be cleared with `aws connect disassociate-security-profiles`.

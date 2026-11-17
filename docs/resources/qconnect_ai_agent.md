@@ -38,6 +38,7 @@ resource "awsext_qconnect_ai_agent" "customer_agent" {
 ### Optional
 
 - `description` (String) Description of the AI Agent.
+- `refresh_triggers` (Map of String) Arbitrary string map. Changing any value updates the AI Agent in place (`qconnect:UpdateAIAgent`) even when `configuration` is unchanged, so Q in Connect re-reads the definitions of `MODEL_CONTEXT_PROTOCOL` tools from their source. Use it to pick up a changed Bedrock AgentCore Gateway tool schema, for example `{ mcp_schema = <hash of the schema file> }`. Unlike `triggers` on the version resources, this never replaces the agent.
 - `tags` (Map of String) Tags to assign to the AI Agent.
 - `visibility_status` (String) Visibility status of the AI Agent. One of PUBLISHED or SAVED. Defaults to SAVED when omitted.
 
