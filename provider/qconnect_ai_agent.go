@@ -44,6 +44,7 @@ type QConnectAIAgentResourceModel struct {
 	VisibilityStatus types.String `tfsdk:"visibility_status"`
 	Description      types.String `tfsdk:"description"`
 	Tags             types.Map    `tfsdk:"tags"`
+	RefreshTriggers  types.Map    `tfsdk:"refresh_triggers"`
 }
 
 func (r *QConnectAIAgentResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -117,6 +118,16 @@ func (r *QConnectAIAgentResource) Schema(ctx context.Context, req resource.Schem
 				Computed:    true,
 				Description: "Tags to assign to the AI Agent.",
 				ElementType: types.StringType,
+			},
+			"refresh_triggers": schema.MapAttribute{
+				Optional:    true,
+				ElementType: types.StringType,
+				MarkdownDescription: "Arbitrary string map. Changing any value updates the AI Agent in place " +
+					"(`qconnect:UpdateAIAgent`) even when `configuration` is unchanged, so Q in Connect " +
+					"re-reads the definitions of `MODEL_CONTEXT_PROTOCOL` tools from their source. Use it to " +
+					"pick up a changed Bedrock AgentCore Gateway tool schema, for example " +
+					"`{ mcp_schema = <hash of the schema file> }`. Unlike `triggers` on the version resources, " +
+					"this never replaces the agent.",
 			},
 		},
 	}
